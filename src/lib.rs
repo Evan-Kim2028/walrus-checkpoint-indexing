@@ -9,15 +9,39 @@
 //! - **Byte-range streaming**: Stream specific byte ranges (requires forked CLI)
 //! - **Adaptive fetching**: Automatically choose strategy based on network health
 //!
+//! ## CLI Compatibility
+//!
+//! This library works with two versions of the Walrus CLI:
+//!
+//! ### Official Walrus CLI (default)
+//!
+//! Works with the standard MystenLabs/walrus binary. Supports:
+//! - Full blob downloads
+//! - Node health tracking
+//! - Sliver prediction (for diagnostics)
+//!
+//! ### Forked Walrus CLI (walrus-cli-streaming)
+//!
+//! Adds byte-range streaming with flags: `--start-byte`, `--byte-length`, `--size-only`, `--stream`
+//!
+//! Required for:
+//! - Byte-range streaming (random checkpoint access)
+//! - Size-only queries
+//! - Zero-copy streaming
+//!
+//! See [`config::CliCapabilities`] for details.
+//!
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use walrus_checkpoint_streaming::{WalrusStorage, Config};
+//! use walrus_checkpoint_streaming::{WalrusStorage, Config, CliCapabilities};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
+//!     // Using official CLI (full blob download)
 //!     let config = Config::builder()
 //!         .walrus_cli_path("/path/to/walrus")
+//!         .cli_capabilities(CliCapabilities::Official)  // default
 //!         .build()?;
 //!
 //!     let storage = WalrusStorage::new(config).await?;
@@ -28,6 +52,25 @@
 //!         Ok(())
 //!     }).await?;
 //!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ### Using Forked CLI for Byte-Range Streaming
+//!
+//! ```rust,no_run
+//! use walrus_checkpoint_streaming::{WalrusStorage, Config, CliCapabilities, FetchStrategy};
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let config = Config::builder()
+//!         .walrus_cli_path("/path/to/walrus-fork")
+//!         .cli_capabilities(CliCapabilities::Forked)  // Required!
+//!         .fetch_strategy(FetchStrategy::ByteRangeStream)
+//!         .build()?;
+//!
+//!     let storage = WalrusStorage::new(config).await?;
+//!     // Now uses byte-range streaming instead of full blob download
 //!     Ok(())
 //! }
 //! ```
@@ -52,7 +95,7 @@ pub mod handlers;
 
 // Re-exports for convenience
 pub use storage::WalrusStorage;
-pub use config::Config;
+pub use config::{Config, CliCapabilities, FetchStrategy};
 pub use node_health::NodeHealthTracker;
 pub use sliver::SliverPredictor;
 pub use handlers::CheckpointHandler;
@@ -60,7 +103,7 @@ pub use handlers::CheckpointHandler;
 /// Prelude module for common imports
 pub mod prelude {
     pub use crate::storage::WalrusStorage;
-    pub use crate::config::Config;
+    pub use crate::config::{Config, CliCapabilities, FetchStrategy};
     pub use crate::handlers::CheckpointHandler;
     pub use sui_types::full_checkpoint_content::CheckpointData;
     pub use sui_types::messages_checkpoint::CheckpointSequenceNumber;

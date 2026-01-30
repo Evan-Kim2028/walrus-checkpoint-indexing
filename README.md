@@ -10,6 +10,39 @@ This library provides efficient streaming of Sui checkpoint data stored on Walru
 - **Byte-range streaming**: Stream specific byte ranges using the forked Walrus CLI
 - **Adaptive fetching**: Automatically choose strategy based on network health
 
+## CLI Compatibility
+
+This library works with **two versions** of the Walrus CLI:
+
+| Feature | Official CLI | Forked CLI |
+|---------|-------------|------------|
+| Full blob download | ✅ Yes | ✅ Yes |
+| Node health tracking | ✅ Yes | ✅ Yes |
+| Sliver prediction | ✅ Yes | ✅ Yes |
+| **Byte-range streaming** | ❌ No | ✅ Yes |
+| **Size-only queries** | ❌ No | ✅ Yes |
+| **Zero-copy streaming** | ❌ No | ✅ Yes |
+
+### Official Walrus CLI
+
+The standard [MystenLabs/walrus](https://github.com/MystenLabs/walrus) binary. Use this for:
+- Sequential checkpoint processing
+- Full blob downloads (more reliable when network has down nodes)
+- Production environments (no custom fork needed)
+
+### Forked Walrus CLI (walrus-cli-streaming)
+
+The [walrus-cli-streaming](https://github.com/Evan-Kim2028/walrus-cli-streaming) fork adds:
+- `--start-byte <N>` - Starting byte position
+- `--byte-length <N>` - Number of bytes to read
+- `--size-only` - Get blob size without downloading
+- `--stream` - Zero-copy streaming to stdout
+
+Use this for:
+- Random access to specific checkpoints
+- Minimizing bandwidth when fetching sparse checkpoints
+- Memory-efficient streaming
+
 ## Features
 
 - **High Performance**: 10-18 checkpoints/sec on healthy networks (8x faster than Sui bucket)
@@ -29,15 +62,19 @@ Add to your `Cargo.toml`:
 walrus-checkpoint-streaming = { git = "https://github.com/Evan-Kim2028/walrus-checkpoint-streaming" }
 ```
 
-### Basic Usage
+### Basic Usage (Official CLI)
 
 ```rust
-use walrus_checkpoint_streaming::{Config, WalrusStorage};
+use walrus_checkpoint_streaming::{Config, WalrusStorage, CliCapabilities};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Create storage with default config
-    let config = Config::default();
+    // Using official CLI (default) - full blob download mode
+    let config = Config::builder()
+        .walrus_cli_path("/path/to/walrus")
+        .cli_capabilities(CliCapabilities::Official)  // default
+        .build()?;
+
     let storage = WalrusStorage::new(config).await?;
     storage.initialize().await?;
 
@@ -48,6 +85,33 @@ async fn main() -> anyhow::Result<()> {
         checkpoint.transactions.len());
 
     // Stream a range of checkpoints
+    storage.stream_checkpoints(239000000..239001000, |cp| async move {
+        println!("Processing checkpoint {}", cp.checkpoint_summary.sequence_number);
+        Ok(())
+    }).await?;
+
+    Ok(())
+}
+```
+
+### Byte-Range Streaming (Forked CLI)
+
+```rust
+use walrus_checkpoint_streaming::{Config, WalrusStorage, CliCapabilities, FetchStrategy};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Using forked CLI with byte-range streaming
+    let config = Config::builder()
+        .walrus_cli_path("/path/to/walrus-fork")
+        .cli_capabilities(CliCapabilities::Forked)  // REQUIRED for byte-range
+        .fetch_strategy(FetchStrategy::ByteRangeStream)
+        .build()?;
+
+    let storage = WalrusStorage::new(config).await?;
+    storage.initialize().await?;
+
+    // Now uses efficient byte-range streaming instead of full blob download
     storage.stream_checkpoints(239000000..239001000, |cp| async move {
         println!("Processing checkpoint {}", cp.checkpoint_summary.sequence_number);
         Ok(())
@@ -82,6 +146,7 @@ cargo build --release
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `WALRUS_CLI_CAPABILITIES` | CLI type: "official" or "forked" | `official` |
 | `WALRUS_ARCHIVAL_URL` | Archival service URL | `https://walrus-sui-archival.mainnet.walrus.space` |
 | `WALRUS_AGGREGATOR_URL` | Aggregator URL | `https://aggregator.walrus-mainnet.walrus.space` |
 
@@ -91,13 +156,17 @@ cargo build --release
 |----------|-------------|---------|
 | `--archival-url` | Archival service URL | env or default |
 | `--aggregator-url` | Aggregator URL | env or default |
-| `--walrus-cli-path` | Path to forked Walrus CLI | none (uses HTTP) |
+| `--walrus-cli-path` | Path to Walrus CLI binary | none (uses HTTP) |
 | `--walrus-cli-context` | Walrus CLI context | `mainnet` |
+| `--cli-capabilities` | CLI type: "official" or "forked" | `official` |
+| `--fetch-strategy` | Strategy: "full-blob", "byte-range", "adaptive" | `full-blob` |
 | `--cli-timeout-secs` | CLI command timeout | 180 |
-| `--range-concurrency` | Concurrent range requests | 96 |
+| `--range-concurrency` | Concurrent range requests | 32 |
 | `--blob-concurrency` | Concurrent blob processing | 4 |
 | `--cache-enabled` | Enable local blob cache | false |
 | `--cache-dir` | Cache directory | `.walrus-cache` |
+
+**Note**: Using `--fetch-strategy=byte-range` requires `--cli-capabilities=forked`.
 
 ## Architecture
 
