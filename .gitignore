@@ -1,0 +1,24 @@
+# Build artifacts
+/target/
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local cache
+.walrus-cache/
+
+# Local notes (not for commit)
+*.local.md
+NOTES.local.md
+
+# State files
+*.state
+backfill_progress.state
+
+# Logs
+*.log
+logs/

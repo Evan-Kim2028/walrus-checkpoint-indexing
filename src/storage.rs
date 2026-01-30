@@ -161,6 +161,7 @@ struct Inner {
     walrus_cli_range_concurrency: usize,
     walrus_cli_range_max_retries: usize,
     walrus_cli_range_retry_delay_secs: u64,
+    #[allow(dead_code)]
     http_timeout_secs: u64,
     client: Client,
     index_cache: RwLock<HashMap<String, HashMap<u64, BlobIndexEntry>>>,
