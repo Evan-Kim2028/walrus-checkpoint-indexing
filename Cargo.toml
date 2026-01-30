@@ -1,0 +1,59 @@
+[package]
+name = "walrus-checkpoint-streaming"
+version = "0.1.0"
+edition = "2021"
+description = "Stream Sui checkpoints from Walrus decentralized storage"
+license = "Apache-2.0"
+repository = "https://github.com/Evan-Kim2028/walrus-checkpoint-streaming"
+keywords = ["sui", "walrus", "checkpoint", "streaming", "blockchain"]
+categories = ["database", "asynchronous"]
+
+[lib]
+name = "walrus_checkpoint_streaming"
+path = "src/lib.rs"
+
+[[bin]]
+name = "walrus-checkpoint-stream"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.37", features = ["full"] }
+futures = "0.3"
+
+# Sui dependencies
+sui-types = { git = "https://github.com/MystenLabs/sui.git", package = "sui-types" }
+sui-storage = { git = "https://github.com/MystenLabs/sui.git", package = "sui-storage" }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bcs = "0.1"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+hex = "0.4"
+base64 = "0.22"
+byteorder = "1.5"
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[features]
+default = []
+# Enable DeepBook-specific event handling as an example
+deepbook-example = []
