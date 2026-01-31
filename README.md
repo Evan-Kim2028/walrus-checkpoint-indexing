@@ -166,16 +166,17 @@ cargo build --release
 - `docs/ARCHIVE_NODE.md`: Build a local archive node using Walrus as the backend
 - `docs/CUSTOM_INDEXING.md`: Custom indexing patterns and output shapes
 
-### Short Examples
+### Quick Example
 
 ```bash
 # All events -> Parquet
 cargo run --release --example alt_checkpoint_parquet -- \
   --start 239600000 --end 239600050 --output ./checkpoint_events.parquet
 
-# DeepBook decoded events -> Parquet
-cargo run --release --example deepbook_alt_parquet -- \
-  --start 239600000 --end 239600050 --output ./deepbook_events.parquet
+# Filter by package (e.g., DeepBook)
+cargo run --release --example alt_checkpoint_parquet -- \
+  --start 239600000 --end 239600050 --output ./deepbook_events.parquet \
+  --package 0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809
 ```
 
 ## Examples
@@ -295,63 +296,24 @@ cargo run --release --example alt_checkpoint_parquet --features duckdb -- \
   --duckdb-summary
 ```
 
-This keeps the integration minimal while demonstrating a full Walrus → Framework → Parquet path.
 See `examples/alt_checkpoint_parquet.rs` for the full implementation.
 
-### DeepBook (Walrus → Sui Indexer Alt → Parquet)
+### Output Schema
 
-The `deepbook_alt_parquet` example is a dedicated DeepBook preset that filters by the
-DeepBook package ID by default and writes to `./deepbook_events.parquet`.
+The parquet output contains these columns:
 
-```bash
-cargo run --release --example deepbook_alt_parquet -- \
-  --start 239600000 \
-  --end 239600050
-
-# Override the package (optional)
-cargo run --release --example deepbook_alt_parquet -- \
-  --start 239600000 \
-  --end 239600050 \
-  --package 0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809
-
-# Optional DuckDB summary (tables + row count)
-cargo run --release --example deepbook_alt_parquet --features duckdb -- \
-  --start 239600000 \
-  --end 239600050 \
-  --duckdb-summary
-```
-
-See `examples/deepbook_alt_parquet.rs` for the full implementation.
-
-### Expected Output Columns
-
-#### alt_checkpoint_parquet
-
-Columns:
-`checkpoint_num`, `timestamp_ms`, `tx_digest`, `event_index`, `package_id`, `module`, `event_type`, `sender`, `event_json`, `bcs_data`
-
-Notes:
-- `event_json` includes metadata plus `bcs_data_base64` (raw BCS, not decoded).
-- `bcs_data` is the raw BCS bytes for the Move event.
-
-#### deepbook_alt_parquet
-
-Columns:
-`checkpoint_num`, `timestamp_ms`, `tx_digest`, `event_index`, `package_id`, `module`, `event_type`, `sender`, `event_json`, `bcs_data`
-
-Notes:
-- `event_json` is the decoded DeepBook event payload.
-- If decode fails, `event_json` includes `decode_error`.
-- `bcs_data` is the raw BCS bytes for the Move event.
-
-#### mass_indexer_parquet
-
-Columns:
-`checkpoint_num`, `timestamp_ms`, `tx_digest`, `event_index`, `package_id`, `module`, `event_type`, `sender`, `event_json`, `bcs_data`
-
-Notes:
-- `event_json` includes metadata plus `bcs_data_base64` (raw BCS, not decoded).
-- `bcs_data` is the raw BCS bytes for the Move event.
+| Column | Type | Description |
+|--------|------|-------------|
+| `checkpoint_num` | u64 | Checkpoint sequence number |
+| `timestamp_ms` | u64 | Checkpoint timestamp (milliseconds) |
+| `tx_digest` | string | Transaction digest |
+| `event_index` | u32 | Event index within transaction |
+| `package_id` | string | Move package ID |
+| `module` | string | Move module name |
+| `event_type` | string | Event type name |
+| `sender` | string | Transaction sender |
+| `event_json` | string | Event metadata as JSON |
+| `bcs_data` | binary | Raw BCS-encoded event data |
 
 ## Configuration
 
