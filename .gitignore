@@ -8,8 +8,11 @@ Cargo.lock
 *.swp
 *.swo
 
-# Local cache
+# Local cache (blobs are ~3.2 GB each)
 .walrus-cache/
+.walrus-blobs-cache/
+checkpoint-spool*/
+*.parquet
 
 # Local notes (not for commit)
 *.local.md

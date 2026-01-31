@@ -1,6 +1,10 @@
-# Walrus Checkpoint Streaming
+# Walrus Checkpoint Indexing
 
-Stream Sui checkpoints from Walrus decentralized storage with high performance.
+[![Official CLI](https://img.shields.io/badge/Official%20CLI-mainnet--v1.40.3_(pinned)-blue)](https://github.com/MystenLabs/walrus/releases/tag/mainnet-v1.40.3) [![Forked CLI](https://img.shields.io/badge/Forked%20CLI-v1.40_(pinned)-orange)](https://github.com/Evan-Kim2028/walrus-cli-streaming)
+
+Index Sui checkpoints from Walrus decentralized storage with high performance.
+
+> **Note:** This library is tested against the official Walrus CLI **mainnet-v1.40.3**. The forked CLI is based on v1.40. Newer versions may work but are not guaranteed to be compatible.
 
 ## Overview
 
@@ -59,13 +63,13 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-walrus-checkpoint-streaming = { git = "https://github.com/Evan-Kim2028/walrus-checkpoint-streaming" }
+walrus-checkpoint-indexing = { git = "https://github.com/Evan-Kim2028/walrus-checkpoint-indexing" }
 ```
 
 ### Basic Usage (Official CLI)
 
 ```rust
-use walrus_checkpoint_streaming::{Config, WalrusStorage, CliCapabilities};
+use walrus_checkpoint_indexing::{Config, WalrusStorage, CliCapabilities};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -97,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
 ### Byte-Range Streaming (Forked CLI)
 
 ```rust
-use walrus_checkpoint_streaming::{Config, WalrusStorage, CliCapabilities, FetchStrategy};
+use walrus_checkpoint_indexing::{Config, WalrusStorage, CliCapabilities, FetchStrategy};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -128,17 +132,205 @@ async fn main() -> anyhow::Result<()> {
 cargo build --release
 
 # Show available checkpoints
-./target/release/walrus-checkpoint-stream info
+./target/release/walrus-checkpoint-index info
 
 # Stream checkpoints in a range
-./target/release/walrus-checkpoint-stream stream --start 239000000 --end 239001000
+./target/release/walrus-checkpoint-index stream --start 239000000 --end 239001000
 
 # Get a single checkpoint
-./target/release/walrus-checkpoint-stream get --checkpoint 239000000
+./target/release/walrus-checkpoint-index get --checkpoint 239000000
 
 # Check node health
-./target/release/walrus-checkpoint-stream health
+./target/release/walrus-checkpoint-index health
 ```
+
+### Short Examples
+
+```bash
+# All events -> Parquet (local spool + Sui alt framework)
+cargo run --release --example alt_checkpoint_parquet --features parquet-output,alt-framework -- \
+  --start 239600000 --end 239600050 --output ./checkpoint_events.parquet
+
+# DeepBook decoded events -> Parquet
+cargo run --release --example deepbook_alt_parquet --features parquet-output,alt-framework -- \
+  --start 239600000 --end 239600050 --output ./deepbook_events.parquet
+```
+
+## Examples
+
+### DeepBook Event Extraction (HTTP Aggregator)
+
+The `deepbook_events_aggregator` example demonstrates extracting events using the **HTTP Aggregator**:
+
+```text
+┌─────────────┐    HTTP Range     ┌──────────────────┐    Walrus     ┌─────────────────┐
+│  This Code  │ ───────────────▶  │  HTTP Aggregator │ ────────────▶ │  Storage Nodes  │
+│             │   Requests        │  (walrus.space)  │   Protocol    │  (RedStuff)     │
+└─────────────┘                   └──────────────────┘               └─────────────────┘
+```
+
+**Trade-offs:**
+- ✅ No CLI installation needed
+- ✅ Works anywhere with HTTP access
+- ❌ Slower than direct CLI access (extra network hop)
+- ❌ Dependent on aggregator availability
+
+```bash
+# Run with HTTP aggregator (no CLI needed)
+cargo run --example deepbook_events_aggregator
+
+# Custom package and checkpoint range
+cargo run --example deepbook_events_aggregator -- \
+  --package 0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809 \
+  --start 239600000 \
+  --end 239600050 \
+  --verbose
+```
+
+This demonstrates the API pattern:
+
+```
+Input:  blob_id + package_id
+Output: Vec<Event> with type breakdown and performance metrics
+```
+
+See `examples/deepbook_events_aggregator.rs` for the full implementation.
+
+### DeepBook Event Extraction (Walrus CLI)
+
+The `deepbook_events_cli` example demonstrates extracting events using the **Walrus CLI** with full blob download:
+
+```text
+┌─────────────┐    walrus read    ┌─────────────────┐
+│  This Code  │ ────────────────▶ │  Storage Nodes  │
+│             │   (RedStuff)      │  (1000 shards)  │
+└─────────────┘                   └─────────────────┘
+       │
+       ▼
+┌─────────────┐
+│ Local Blob  │  (~3.2 GB cached)
+│   Cache     │
+└─────────────┘
+```
+
+**Trade-offs:**
+- ✅ Faster and more reliable than HTTP aggregator
+- ✅ Full blob cached locally for repeated access
+- ✅ No dependency on aggregator availability
+- ❌ Requires Walrus CLI installation
+- ❌ Initial download is large (~3.2 GB per blob)
+
+```bash
+# Requires Walrus CLI
+cargo run --example deepbook_events_cli -- --walrus-cli-path /path/to/walrus
+
+# With environment variable
+export WALRUS_CLI_PATH=/path/to/walrus
+cargo run --example deepbook_events_cli
+
+# Custom package and checkpoint range
+cargo run --example deepbook_events_cli -- \
+  --walrus-cli-path /path/to/walrus \
+  --start 238954764 \
+  --end 238954864 \
+  --verbose
+```
+
+See `examples/deepbook_events_cli.rs` for the full implementation.
+
+### Alt Checkpoint Ingest -> Parquet (All Events)
+
+The `alt_checkpoint_parquet` example shows a **lightweight end-to-end flow** that ingests **all events**:
+
+1. Stream checkpoints from Walrus
+2. Spool them locally in Sui's `.chk` format
+3. Use the **Sui indexer alt framework** to process checkpoints from the local path
+4. Write filtered events to Parquet (DuckDB/Polars friendly)
+
+```bash
+# Build/run with required features
+cargo run --release --example alt_checkpoint_parquet --features parquet-output,alt-framework -- \
+  --start 239600000 \
+  --end 239600050 \
+  --output ./checkpoint_events.parquet
+
+# Filter by package (e.g., DeepBook)
+cargo run --release --example alt_checkpoint_parquet --features parquet-output,alt-framework -- \
+  --start 239600000 \
+  --end 239600050 \
+  --package 0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809
+
+# Reuse spooled checkpoints for faster iteration
+cargo run --release --example alt_checkpoint_parquet --features parquet-output,alt-framework -- \
+  --start 239600000 \
+  --end 239600050 \
+  --spool-mode cache \
+  --spool-dir ./checkpoint-spool
+
+# Optional DuckDB summary (tables + row count)
+cargo run --release --example alt_checkpoint_parquet --features parquet-output,alt-framework,duckdb -- \
+  --start 239600000 \
+  --end 239600050 \
+  --duckdb-summary
+```
+
+This keeps the integration minimal while demonstrating a full Walrus → Framework → Parquet path.
+See `examples/alt_checkpoint_parquet.rs` for the full implementation.
+
+### DeepBook (Walrus → Sui Indexer Alt → Parquet)
+
+The `deepbook_alt_parquet` example is a dedicated DeepBook preset that filters by the
+DeepBook package ID by default and writes to `./deepbook_events.parquet`.
+
+```bash
+cargo run --release --example deepbook_alt_parquet --features parquet-output,alt-framework -- \
+  --start 239600000 \
+  --end 239600050
+
+# Override the package (optional)
+cargo run --release --example deepbook_alt_parquet --features parquet-output,alt-framework -- \
+  --start 239600000 \
+  --end 239600050 \
+  --package 0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809
+
+# Optional DuckDB summary (tables + row count)
+cargo run --release --example deepbook_alt_parquet --features parquet-output,alt-framework,duckdb -- \
+  --start 239600000 \
+  --end 239600050 \
+  --duckdb-summary
+```
+
+See `examples/deepbook_alt_parquet.rs` for the full implementation.
+
+### Expected Output Columns
+
+#### alt_checkpoint_parquet
+
+Columns:
+`checkpoint_num`, `timestamp_ms`, `tx_digest`, `event_index`, `package_id`, `module`, `event_type`, `sender`, `event_json`, `bcs_data`
+
+Notes:
+- `event_json` includes metadata plus `bcs_data_base64` (raw BCS, not decoded).
+- `bcs_data` is the raw BCS bytes for the Move event.
+
+#### deepbook_alt_parquet
+
+Columns:
+`checkpoint_num`, `timestamp_ms`, `tx_digest`, `event_index`, `package_id`, `module`, `event_type`, `sender`, `event_json`, `bcs_data`
+
+Notes:
+- `event_json` is the decoded DeepBook event payload.
+- If decode fails, `event_json` includes `decode_error`.
+- `bcs_data` is the raw BCS bytes for the Move event.
+
+#### mass_indexer_parquet
+
+Columns:
+`checkpoint_num`, `timestamp_ms`, `tx_digest`, `event_index`, `package_id`, `module`, `event_type`, `sender`, `event_json`, `bcs_data`
+
+Notes:
+- `event_json` includes metadata plus `bcs_data_base64` (raw BCS, not decoded).
+- `bcs_data` is the raw BCS bytes for the Move event.
 
 ## Configuration
 
@@ -252,7 +444,7 @@ See: [walrus-cli-streaming](https://github.com/Evan-Kim2028/walrus-cli-streaming
 
 ```bash
 # Via CLI
-./target/release/walrus-checkpoint-stream health
+./target/release/walrus-checkpoint-index health
 
 # Via Walrus CLI directly
 walrus health --committee --context mainnet --json
