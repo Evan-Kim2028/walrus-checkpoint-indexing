@@ -1,13 +1,13 @@
-//! CLI binary for streaming Sui checkpoints from Walrus.
+//! CLI binary for indexing Sui checkpoints from Walrus.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use walrus_checkpoint_streaming::{Config, WalrusStorage};
+use walrus_checkpoint_indexing::{Config, WalrusStorage};
 
 #[derive(Parser)]
-#[command(name = "walrus-checkpoint-stream")]
-#[command(about = "Stream Sui checkpoints from Walrus decentralized storage")]
+#[command(name = "walrus-checkpoint-index")]
+#[command(about = "Index Sui checkpoints from Walrus decentralized storage")]
 struct Cli {
     #[command(flatten)]
     config: Config,
@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "walrus_checkpoint_streaming=info".into()),
+                .unwrap_or_else(|_| "walrus_checkpoint_indexing=info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();

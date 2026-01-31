@@ -1,19 +1,19 @@
 [package]
-name = "walrus-checkpoint-streaming"
+name = "walrus-checkpoint-indexing"
 version = "0.1.0"
 edition = "2021"
-description = "Stream Sui checkpoints from Walrus decentralized storage"
+description = "Index Sui checkpoints from Walrus decentralized storage"
 license = "Apache-2.0"
-repository = "https://github.com/Evan-Kim2028/walrus-checkpoint-streaming"
-keywords = ["sui", "walrus", "checkpoint", "streaming", "blockchain"]
+repository = "https://github.com/Evan-Kim2028/walrus-checkpoint-indexing"
+keywords = ["sui", "walrus", "checkpoint", "indexing", "blockchain"]
 categories = ["database", "asynchronous"]
 
 [lib]
-name = "walrus_checkpoint_streaming"
+name = "walrus_checkpoint_indexing"
 path = "src/lib.rs"
 
 [[bin]]
-name = "walrus-checkpoint-stream"
+name = "walrus-checkpoint-index"
 path = "src/main.rs"
 
 [dependencies]
@@ -21,9 +21,9 @@ path = "src/main.rs"
 tokio = { version = "1.37", features = ["full"] }
 futures = "0.3"
 
-# Sui dependencies
-sui-types = { git = "https://github.com/MystenLabs/sui.git", package = "sui-types" }
-sui-storage = { git = "https://github.com/MystenLabs/sui.git", package = "sui-storage" }
+# Sui dependencies (pinned to mainnet-v1.64.2)
+sui-types = { git = "https://github.com/MystenLabs/sui.git", tag = "mainnet-v1.64.2", package = "sui-types" }
+sui-storage = { git = "https://github.com/MystenLabs/sui.git", tag = "mainnet-v1.64.2", package = "sui-storage" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -50,10 +50,69 @@ base64 = "0.22"
 byteorder = "1.5"
 async-trait = "0.1"
 
+# Parquet output (optional)
+parquet = { version = "54", optional = true }
+arrow = { version = "54", optional = true }
+duckdb = { version = "1.4.4", optional = true, features = ["bundled"] }
+
+# Sui indexer alt framework integration (optional)
+sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", tag = "mainnet-v1.64.2", package = "sui-indexer-alt-framework", optional = true }
+sui-indexer-alt-framework-store-traits = { git = "https://github.com/MystenLabs/sui.git", tag = "mainnet-v1.64.2", package = "sui-indexer-alt-framework-store-traits", optional = true }
+tempfile = { version = "3.10", optional = true }
+scoped-futures = { version = "0.1", optional = true }
+prometheus = { version = "0.13", optional = true }
+
 [dev-dependencies]
 tokio-test = "0.4"
+
+# Sui indexer framework (optional - for full framework integration)
+# Uncomment when ready to integrate with the full sui-indexer-alt-framework
+# sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", tag = "mainnet-v1.64.2", package = "sui-indexer-alt-framework" }
+
+[[example]]
+name = "deepbook_events_aggregator"
+path = "examples/deepbook_events_aggregator.rs"
+
+[[example]]
+name = "deepbook_events_cli"
+path = "examples/deepbook_events_cli.rs"
+
+[[example]]
+name = "deepbook_events_forked_cli"
+path = "examples/deepbook_events_forked_cli.rs"
+
+[[example]]
+name = "mass_indexer"
+path = "examples/mass_indexer.rs"
+
+[[example]]
+name = "mass_indexer_parquet"
+path = "examples/mass_indexer_parquet.rs"
+required-features = ["parquet-output"]
+
+[[example]]
+name = "alt_checkpoint_parquet"
+path = "examples/alt_checkpoint_parquet.rs"
+required-features = ["parquet-output", "alt-framework"]
+
+[[example]]
+name = "deepbook_alt_parquet"
+path = "examples/deepbook_alt_parquet.rs"
+required-features = ["parquet-output", "alt-framework"]
 
 [features]
 default = []
 # Enable DeepBook-specific event handling as an example
 deepbook-example = []
+# Enable parquet output support
+parquet-output = ["parquet", "arrow"]
+# Enable DuckDB summaries for parquet outputs
+duckdb = ["dep:duckdb"]
+# Enable Sui indexer alt framework integration
+alt-framework = [
+    "sui-indexer-alt-framework",
+    "sui-indexer-alt-framework-store-traits",
+    "tempfile",
+    "scoped-futures",
+    "prometheus",
+]

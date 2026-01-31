@@ -182,8 +182,9 @@ impl WalrusStorage {
     pub async fn new(config: Config) -> Result<Self> {
         let cache_dir = config.cache_dir.clone().unwrap_or_else(|| PathBuf::from(".walrus-cache"));
 
-        if config.walrus_cli_path.is_some() && config.cache_enabled {
-            std::fs::create_dir_all(&cache_dir).context("failed to create cache dir for walrus cli")?;
+        // Create cache directory if caching is enabled (for CLI or HTTP)
+        if config.cache_enabled {
+            std::fs::create_dir_all(&cache_dir).context("failed to create cache dir")?;
         }
 
         // Create health tracker if CLI path is available
@@ -465,9 +466,8 @@ impl WalrusStorage {
         let mut total_processed = 0u64;
 
         for blob in blobs {
-            if self.inner.walrus_cli_path.is_some() && self.inner.cache_enabled {
-                self.download_blob_via_cli(&blob.blob_id).await?;
-            }
+            // Ensure blob is cached (works for both CLI and HTTP)
+            self.ensure_blob_cached(&blob.blob_id).await?;
 
             let index = match self.load_blob_index(&blob.blob_id).await {
                 Ok(index) => index,
@@ -599,8 +599,8 @@ impl WalrusStorage {
                 let checkpoints = checkpoints.clone();
 
                 async move {
-                    // Refresh node health when starting a new blob
-                    if storage.inner.walrus_cli_path.is_some() && !storage.inner.cache_enabled {
+                    // Refresh node health when starting a new blob (only when streaming, not caching)
+                    if !storage.inner.cache_enabled {
                         if let Err(e) = storage.poll_node_health().await {
                             tracing::debug!("failed to refresh node health for blob {}: {}", blob.blob_id, e);
                         } else {
@@ -608,9 +608,8 @@ impl WalrusStorage {
                         }
                     }
 
-                    if storage.inner.walrus_cli_path.is_some() && storage.inner.cache_enabled {
-                        storage.download_blob_via_cli(&blob.blob_id).await?;
-                    }
+                    // Ensure blob is cached (works for both CLI and HTTP)
+                    storage.ensure_blob_cached(&blob.blob_id).await?;
 
                     let index = match storage.load_blob_index(&blob.blob_id).await {
                         Ok(index) => index,
@@ -790,6 +789,82 @@ impl WalrusStorage {
 
         let elapsed = start_time.elapsed();
         let size_bytes = output_path.metadata()?.len();
+        self.inner.bytes_downloaded.fetch_add(size_bytes, Ordering::Relaxed);
+        let size_mb = size_bytes as f64 / 1_000_000.0;
+        tracing::info!("Finished download of blob {} in {:.2}s ({:.2} MB/s, total size: {:.2} MB)",
+            blob_id,
+            elapsed.as_secs_f64(),
+            size_mb / elapsed.as_secs_f64(),
+            size_mb
+        );
+
+        Ok(output_path)
+    }
+
+    /// Ensure a blob is cached locally (unified across CLI and HTTP methods)
+    /// Returns the path to the cached blob, or None if caching is disabled
+    async fn ensure_blob_cached(&self, blob_id: &str) -> Result<Option<PathBuf>> {
+        if !self.inner.cache_enabled {
+            return Ok(None);
+        }
+
+        let cached_path = self.get_cached_blob_path(blob_id);
+        if cached_path.exists() {
+            return Ok(Some(cached_path));
+        }
+
+        // Download via CLI if available, otherwise via HTTP
+        if self.inner.walrus_cli_path.is_some() {
+            self.download_blob_via_cli(blob_id).await?;
+        } else {
+            self.download_blob_via_http(blob_id).await?;
+        }
+
+        Ok(Some(cached_path))
+    }
+
+    /// Check if a blob is cached
+    pub fn is_blob_cached(&self, blob_id: &str) -> bool {
+        self.get_cached_blob_path(blob_id).exists()
+    }
+
+    async fn download_blob_via_http(&self, blob_id: &str) -> Result<PathBuf> {
+        let output_path = self.get_cached_blob_path(blob_id);
+
+        if output_path.exists() {
+            return Ok(output_path);
+        }
+
+        tracing::info!("Starting download of blob {} via HTTP to {}", blob_id, output_path.display());
+        let start_time = Instant::now();
+
+        let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
+
+        let bytes = self.with_retry(|| {
+            let client = self.inner.client.clone();
+            let url = url.clone();
+            async move {
+                let response = client.get(&url)
+                    .timeout(Duration::from_secs(600)) // 10 min timeout for large blobs
+                    .send()
+                    .await?;
+
+                if !response.status().is_success() {
+                    return Err(anyhow::anyhow!("status {}", response.status()));
+                }
+                Ok(response.bytes().await?.to_vec())
+            }
+        }).await.with_context(|| format!("failed to download blob {}", blob_id))?;
+
+        // Write to temp file then rename for atomicity
+        let temp_path = output_path.with_extension("tmp");
+        tokio::fs::write(&temp_path, &bytes).await
+            .with_context(|| format!("failed to write blob to {:?}", temp_path))?;
+        tokio::fs::rename(&temp_path, &output_path).await
+            .with_context(|| format!("failed to rename {:?} to {:?}", temp_path, output_path))?;
+
+        let elapsed = start_time.elapsed();
+        let size_bytes = bytes.len() as u64;
         self.inner.bytes_downloaded.fetch_add(size_bytes, Ordering::Relaxed);
         let size_mb = size_bytes as f64 / 1_000_000.0;
         tracing::info!("Finished download of blob {} in {:.2}s ({:.2} MB/s, total size: {:.2} MB)",
@@ -1181,16 +1256,7 @@ impl WalrusStorage {
     async fn download_range(&self, blob_id: &str, start: u64, length: u64) -> Result<Vec<u8>> {
         let cached_path = self.get_cached_blob_path(blob_id);
 
-        if self.inner.walrus_cli_path.is_some() {
-            if self.inner.cache_enabled {
-                if !cached_path.exists() {
-                    self.download_blob_via_cli(blob_id).await?;
-                }
-            } else {
-                return self.read_range_via_cli_resilient(blob_id, start, length).await;
-            }
-        }
-
+        // Check if blob is already cached (most common path after ensure_blob_cached is called)
         if cached_path.exists() {
             let mut file = std::fs::File::open(&cached_path)
                 .with_context(|| format!("failed to open cached blob {}", cached_path.display()))?;
@@ -1202,7 +1268,24 @@ impl WalrusStorage {
             return Ok(buffer);
         }
 
-        // Fallback to HTTP
+        // If caching is enabled, ensure blob is cached first (unified method)
+        if self.inner.cache_enabled {
+            self.ensure_blob_cached(blob_id).await?;
+            // Read from cached file
+            let mut file = std::fs::File::open(&cached_path)
+                .with_context(|| format!("failed to open cached blob {}", cached_path.display()))?;
+            file.seek(SeekFrom::Start(start))?;
+            let mut buffer = vec![0u8; length as usize];
+            file.read_exact(&mut buffer)?;
+            return Ok(buffer);
+        }
+
+        // Streaming mode (no caching) - use CLI range reads if available
+        if self.inner.walrus_cli_path.is_some() {
+            return self.read_range_via_cli_resilient(blob_id, start, length).await;
+        }
+
+        // Fallback to HTTP range requests (no caching, no CLI)
         let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
         let end = start + length - 1;
 

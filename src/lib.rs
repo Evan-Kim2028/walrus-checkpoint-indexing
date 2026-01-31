@@ -1,6 +1,6 @@
-//! # Walrus Checkpoint Streaming
+//! # Walrus Checkpoint Indexing
 //!
-//! Stream Sui checkpoints from Walrus decentralized storage.
+//! Index Sui checkpoints from Walrus decentralized storage.
 //!
 //! This library provides efficient access to historical Sui checkpoint data stored
 //! on the Walrus network. It supports multiple fetch strategies:
@@ -92,6 +92,8 @@ pub mod sliver;
 pub mod blob;
 pub mod config;
 pub mod handlers;
+pub mod indexer;
+pub mod deepbook;
 
 // Re-exports for convenience
 pub use storage::WalrusStorage;
@@ -99,12 +101,14 @@ pub use config::{Config, CliCapabilities, FetchStrategy};
 pub use node_health::NodeHealthTracker;
 pub use sliver::SliverPredictor;
 pub use handlers::CheckpointHandler;
+pub use indexer::{MassIndexer, Processor, IndexerConfig, Watermark, IndexerStats};
 
 /// Prelude module for common imports
 pub mod prelude {
     pub use crate::storage::WalrusStorage;
     pub use crate::config::{Config, CliCapabilities, FetchStrategy};
     pub use crate::handlers::CheckpointHandler;
+    pub use crate::indexer::{MassIndexer, Processor, IndexerConfig, Watermark};
     pub use sui_types::full_checkpoint_content::CheckpointData;
     pub use sui_types::messages_checkpoint::CheckpointSequenceNumber;
 }

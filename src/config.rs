@@ -127,8 +127,8 @@ impl FetchStrategy {
 
 /// Configuration for Walrus checkpoint storage.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "walrus-checkpoint-stream")]
-#[command(about = "Stream Sui checkpoints from Walrus decentralized storage")]
+#[command(name = "walrus-checkpoint-index")]
+#[command(about = "Index Sui checkpoints from Walrus decentralized storage")]
 pub struct Config {
     // === Walrus Connection ===
 

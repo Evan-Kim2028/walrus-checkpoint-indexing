@@ -296,7 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_counting_handler() {
-        let mut handler = CountingHandler::new();
+        let handler = CountingHandler::new();
         assert_eq!(handler.count(), 0);
         // Can't easily create CheckpointData in tests, but the structure is correct
     }
