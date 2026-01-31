@@ -65,10 +65,6 @@ prometheus = "0.13"
 [dev-dependencies]
 tokio-test = "0.4"
 
-# Sui indexer framework (optional - for full framework integration)
-# Uncomment when ready to integrate with the full sui-indexer-alt-framework
-# sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", tag = "mainnet-v1.64.2", package = "sui-indexer-alt-framework" }
-
 [[example]]
 name = "deepbook_events_aggregator"
 path = "examples/deepbook_events_aggregator.rs"
@@ -78,24 +74,13 @@ name = "deepbook_events_cli"
 path = "examples/deepbook_events_cli.rs"
 
 [[example]]
-name = "deepbook_events_forked_cli"
-path = "examples/deepbook_events_forked_cli.rs"
-
-[[example]]
-name = "mass_indexer"
-path = "examples/mass_indexer.rs"
-
-[[example]]
-name = "mass_indexer_parquet"
-path = "examples/mass_indexer_parquet.rs"
-
-[[example]]
 name = "alt_checkpoint_parquet"
 path = "examples/alt_checkpoint_parquet.rs"
 
 [[example]]
-name = "deepbook_alt_parquet"
-path = "examples/deepbook_alt_parquet.rs"
+name = "analyze_parquet"
+path = "examples/analyze_parquet.rs"
+required-features = ["duckdb"]
 
 [features]
 default = []
