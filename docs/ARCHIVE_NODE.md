@@ -1,57 +1,113 @@
-**Archive Node (Walrus-Backed)**
-- Goal: use Walrus as the durable backend and build a local archive view without running a full Sui node.
-- Sources: HTTP archival/aggregator endpoints or the Walrus CLI (official or forked).
+# Archive Node (Walrus-Backed)
 
-**Data Flow**
+Use Walrus decentralized storage as a durable backend for Sui checkpoint data without running a full Sui node.
+
+## Data Flow
+
 ```
-Walrus (archival/aggregator/CLI)
+Walrus Storage (archival/aggregator)
         │
         ▼
 Checkpoint blobs (BCS + index)
         │
         ▼
-Local spool (.chk files, optional)
+Local spool (.chk files)
         │
         ▼
-Indexer (custom or Sui alt framework)
+Sui Alt Framework (indexer)
         │
         ▼
-Parquet / DuckDB / downstream analytics
+Parquet / DuckDB / Analytics
 ```
 
-**Why a Local Spool**
-- `.chk` files are the exact Sui checkpoint format expected by the Sui indexer alt framework.
-- Spooling lets you iterate locally without re-downloading blobs each run.
-- You can keep it ephemeral (temp dir) or cached (repeatable runs).
+## Why Local Spooling?
 
-**Minimal Archive Workflow**
-1) Fetch checkpoints from Walrus
-2) Spool to local `.chk`
-3) Process locally (alt framework or custom)
-4) Persist to Parquet or your own sink
+- `.chk` files match the Sui checkpoint format expected by the indexer framework
+- Spooling enables iteration without re-downloading blobs each run
+- Choose ephemeral (temp dir, auto-cleanup) or cached (persistent) mode
 
-**Example: Full-range Spool + Parquet**
+## Quick Start
+
+### Ephemeral Mode (Default)
+
+Checkpoints stored in temp directory, cleaned up after run:
+
 ```bash
-cargo run --release --example alt_checkpoint_parquet --features parquet-output,alt-framework -- \
+cargo run --release --example alt_checkpoint_parquet -- \
   --start 239600000 \
-  --end 239600050 \
+  --end 239600500 \
+  --output-dir ./parquet_output
+```
+
+### Cached Mode (Reusable)
+
+Checkpoints persisted for faster re-runs:
+
+```bash
+# First run: download and spool
+cargo run --release --example alt_checkpoint_parquet -- \
+  --start 239600000 \
+  --end 239600500 \
   --spool-mode cache \
   --spool-dir ./checkpoint-spool \
-  --output ./checkpoint_events.parquet
+  --cache-enabled \
+  --output-dir ./parquet_output
+
+# Subsequent runs: instant (no re-download)
+cargo run --release --example alt_checkpoint_parquet -- \
+  --start 239600000 \
+  --end 239600500 \
+  --spool-mode cache \
+  --spool-dir ./checkpoint-spool \
+  --output-dir ./parquet_output
 ```
 
-**Repeatable Runs**
-- Cache Walrus blobs: `--cache-enabled --cache-dir ./.walrus-cache`
-- Reuse spool: `--spool-mode cache --spool-dir ./checkpoint-spool`
+## Caching Options
 
-**Validation (Quick)**
+| Flag | Description | Disk Usage |
+|------|-------------|------------|
+| `--cache-enabled` | Cache Walrus blobs | ~3 GB per blob |
+| `--spool-mode cache` | Persist checkpoint files | ~2 KB per checkpoint |
+| `--spool-dir <path>` | Custom spool location | - |
+
+### Storage Estimates
+
+| Checkpoints | Blobs | Blob Cache | Spool Size |
+|-------------|-------|------------|------------|
+| 10,000 | 1-2 | ~6 GB | ~20 MB |
+| 100,000 | ~11 | ~33 GB | ~200 MB |
+| 1,000,000 | ~110 | ~330 GB | ~2 GB |
+
+## Validation
+
+Verify output with DuckDB summary:
+
 ```bash
-cargo run --release --example alt_checkpoint_parquet --features parquet-output,alt-framework,duckdb -- \
+cargo run --release --example alt_checkpoint_parquet --features duckdb -- \
   --start 239600000 \
-  --end 239600050 \
+  --end 239600500 \
+  --output-dir ./parquet_output \
   --duckdb-summary
 ```
 
-**Notes**
-- This repo intentionally keeps the architecture light: spool → index → parquet.
-- You can swap the sink with your own database, but Parquet keeps examples portable.
+## Large-Scale Indexing
+
+For 100k+ checkpoints, enable parallel blob prefetching:
+
+```bash
+cargo run --release --example alt_checkpoint_parquet -- \
+  --start 238954764 \
+  --end 239086998 \
+  --output-dir ./parquet_output \
+  --cache-enabled \
+  --parallel-prefetch \
+  --prefetch-concurrency 4
+```
+
+This downloads multiple blobs concurrently (2x faster than sequential).
+
+## Architecture Notes
+
+- **Light design**: spool → index → parquet
+- **Portable output**: Parquet works with DuckDB, Polars, Spark
+- **Extensible**: Swap the sink for your own database if needed
