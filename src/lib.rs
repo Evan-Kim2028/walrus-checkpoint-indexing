@@ -34,7 +34,7 @@
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use walrus_checkpoint_streaming::{WalrusStorage, Config, CliCapabilities};
+//! use walrus_checkpoint_indexing::{WalrusStorage, Config, CliCapabilities};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -47,7 +47,7 @@
 //!     let storage = WalrusStorage::new(config).await?;
 //!
 //!     // Stream checkpoints
-//!     storage.stream_checkpoints(1000..2000, |checkpoint| async {
+//!     storage.stream_checkpoints(1000..2000, |checkpoint| async move {
 //!         println!("Checkpoint {}", checkpoint.checkpoint_summary.sequence_number);
 //!         Ok(())
 //!     }).await?;
@@ -59,7 +59,7 @@
 //! ### Using Forked CLI for Byte-Range Streaming
 //!
 //! ```rust,no_run
-//! use walrus_checkpoint_streaming::{WalrusStorage, Config, CliCapabilities, FetchStrategy};
+//! use walrus_checkpoint_indexing::{WalrusStorage, Config, CliCapabilities, FetchStrategy};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
