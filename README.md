@@ -1,19 +1,35 @@
 # Walrus Checkpoint Indexing
 
-Index Sui blockchain checkpoints from Walrus decentralized storage into queryable Parquet files.
+Index Sui blockchain checkpoints from [Walrus](https://walrus.xyz) decentralized storage into queryable Parquet files.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Sui](https://img.shields.io/badge/Sui-mainnet--v1.64.2-4DA2FF)](https://github.com/MystenLabs/sui)
+[![Sui](https://img.shields.io/badge/Sui-mainnet--v1.64.2-4DA2FF)](https://github.com/MystenLabs/sui/releases/tag/mainnet-v1.64.2)
 
 ## Why This Project?
 
-Sui checkpoint data is archived on [Walrus](https://walrus.xyz) decentralized storage. This library provides efficient tools to:
+Sui checkpoint data is archived on Walrus decentralized storage. This project bridges that data with the official [sui-indexer-alt-framework](https://github.com/MystenLabs/sui/tree/main/crates/sui-indexer-alt-framework), enabling you to:
 
 - **Stream checkpoints** from Walrus at high throughput
 - **Export to Parquet** for analysis with DuckDB, Polars, or Spark
-- **Match official schemas** compatible with `sui-indexer-alt`
+- **Match official schemas** compatible with [sui-indexer-alt](https://github.com/MystenLabs/sui/tree/main/crates/sui-indexer-alt)
 
 **Performance:** 132k checkpoints in 11 minutes, 24.5 GB → 1.84 GB Parquet (13x compression)
+
+## How It Works
+
+```
+┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────────────┐     ┌─────────────┐
+│  Walrus Storage │ ──▶ │  walrus-checkpoint-  │ ──▶ │  sui-indexer-alt-       │ ──▶ │   Parquet   │
+│  (checkpoint    │     │  indexing            │     │  framework              │     │   Files     │
+│   blobs)        │     │  (download + spool)  │     │  (process checkpoints)  │     │             │
+└─────────────────┘     └──────────────────────┘     └─────────────────────────┘     └─────────────┘
+```
+
+This library:
+1. Downloads checkpoint blobs from [Walrus archival service](https://walrus-sui-archival.mainnet.walrus.space)
+2. Extracts and spools checkpoints in `.chk` format (same as Sui full nodes)
+3. Feeds them to [sui-indexer-alt-framework](https://github.com/MystenLabs/sui/tree/main/crates/sui-indexer-alt-framework) for processing
+4. Outputs 10 Parquet tables matching the official indexer schemas
 
 ## Quick Start
 
@@ -33,13 +49,14 @@ cargo run --release --example alt_checkpoint_parquet -- \
   --end 239010000 \
   --output-dir ./parquet_output
 
-# With parallel blob downloads (recommended for large ranges)
+# With parallel downloads and progress bars (recommended)
 cargo run --release --example alt_checkpoint_parquet -- \
   --start 239000000 \
   --end 239100000 \
   --output-dir ./parquet_output \
   --parallel-prefetch \
-  --prefetch-concurrency 4
+  --prefetch-concurrency 4 \
+  --show-progress
 ```
 
 ### 3. Query with DuckDB
@@ -57,11 +74,15 @@ duckdb -c "
 ## Features
 
 ### High-Performance Indexing
-- **Parallel blob prefetching** - Download multiple blobs concurrently (2x faster downloads)
+- **Parallel blob prefetching** - Download multiple blobs concurrently (2x faster)
+- **Progress bars** - Real-time download progress for each blob (`--show-progress`)
 - **Streaming architecture** - Process checkpoints as they download
 - **Local caching** - Reuse downloaded blobs for iterative analysis
 
 ### 10 Output Tables
+
+Output schemas match the official [sui-indexer-alt](https://github.com/MystenLabs/sui/tree/main/crates/sui-indexer-alt) implementation:
+
 | Table | Description |
 |-------|-------------|
 | `transactions` | Transaction metadata, gas usage, status |
@@ -101,13 +122,15 @@ cargo run --release --example alt_checkpoint_parquet -- \
   --package 0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809
 ```
 
-### With DuckDB Summary
+### With Progress Bars and DuckDB Summary
 
 ```bash
 cargo run --release --example alt_checkpoint_parquet --features duckdb -- \
   --start 239600000 \
   --end 239600500 \
   --output-dir ./parquet_output \
+  --parallel-prefetch \
+  --show-progress \
   --duckdb-summary
 ```
 
@@ -137,6 +160,7 @@ cargo run --release --example alt_checkpoint_parquet -- \
 | `--output-dir` | Parquet output directory | `./parquet_output` |
 | `--parallel-prefetch` | Enable parallel blob downloads | false |
 | `--prefetch-concurrency` | Number of concurrent downloads | 4 |
+| `--show-progress` | Show download progress bars | false |
 | `--cache-enabled` | Cache blobs locally (~3 GB each) | false |
 | `--spool-mode` | `ephemeral` or `cache` | `ephemeral` |
 | `--spool-dir` | Directory for checkpoint spool | temp dir |
@@ -227,11 +251,28 @@ async fn main() -> anyhow::Result<()> {
 ## Architecture
 
 ```
-Walrus Storage → Blob Download → Checkpoint Extraction → Sui Alt Framework → Parquet Writers
-                 (parallel)      (BCS decode)            (pipeline)          (Arrow)
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           walrus-checkpoint-indexing                             │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐    ┌──────────┐ │
+│  │   Walrus    │    │    Blob     │    │  sui-indexer-alt-   │    │  Parquet │ │
+│  │  Storage    │───▶│  Download   │───▶│  framework          │───▶│  Writers │ │
+│  │             │    │  (parallel) │    │  (from MystenLabs)  │    │  (Arrow) │ │
+│  └─────────────┘    └─────────────┘    └─────────────────────┘    └──────────┘ │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Blob format:** Each blob is ~3 GB containing ~9,000 checkpoints with a self-indexing footer.
+
+## Key Dependencies
+
+| Crate | Purpose | Source |
+|-------|---------|--------|
+| [sui-indexer-alt-framework](https://github.com/MystenLabs/sui/tree/main/crates/sui-indexer-alt-framework) | Checkpoint processing pipeline | MystenLabs/sui |
+| [sui-types](https://github.com/MystenLabs/sui/tree/main/crates/sui-types) | Sui type definitions | MystenLabs/sui |
+| [sui-storage](https://github.com/MystenLabs/sui/tree/main/crates/sui-storage) | Checkpoint file format | MystenLabs/sui |
 
 ## Documentation
 
@@ -241,8 +282,9 @@ Walrus Storage → Blob Download → Checkpoint Extraction → Sui Alt Framework
 
 ## Related Projects
 
+- [Walrus](https://walrus.xyz) - Decentralized storage for Sui
+- [sui-indexer-alt](https://github.com/MystenLabs/sui/tree/main/crates/sui-indexer-alt) - Official Sui indexer
 - [deepbookv3-walrus-streaming](https://github.com/Evan-Kim2028/deepbookv3-walrus-streaming) - DeepBook indexer using this library
-- [sui-indexer-alt](https://github.com/MystenLabs/sui/tree/main/crates/sui-indexer-alt) - Official Sui indexer reference
 
 ## License
 
