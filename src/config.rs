@@ -59,7 +59,7 @@ pub enum CliCapabilities {
     /// - You need random access to specific checkpoints
     /// - You want to minimize bandwidth by fetching only needed bytes
     ///
-    /// Repository: https://github.com/Evan-Kim2028/walrus-cli-streaming
+    /// Repository: <https://github.com/Evan-Kim2028/walrus-cli-streaming>
     Forked,
 }
 
