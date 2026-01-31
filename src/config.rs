@@ -70,7 +70,10 @@ impl std::str::FromStr for CliCapabilities {
         match s.to_lowercase().as_str() {
             "official" | "standard" | "upstream" => Ok(CliCapabilities::Official),
             "forked" | "streaming" | "custom" => Ok(CliCapabilities::Forked),
-            _ => Err(format!("Unknown CLI capability: {}. Use 'official' or 'forked'.", s)),
+            _ => Err(format!(
+                "Unknown CLI capability: {}. Use 'official' or 'forked'.",
+                s
+            )),
         }
     }
 }
@@ -131,13 +134,20 @@ impl FetchStrategy {
 #[command(about = "Index Sui checkpoints from Walrus decentralized storage")]
 pub struct Config {
     // === Walrus Connection ===
-
     /// URL of the Walrus archival metadata service
-    #[arg(long, env = "WALRUS_ARCHIVAL_URL", default_value = "https://walrus-sui-archival.mainnet.walrus.space")]
+    #[arg(
+        long,
+        env = "WALRUS_ARCHIVAL_URL",
+        default_value = "https://walrus-sui-archival.mainnet.walrus.space"
+    )]
     pub archival_url: String,
 
     /// URL of the Walrus aggregator for HTTP range requests
-    #[arg(long, env = "WALRUS_AGGREGATOR_URL", default_value = "https://aggregator.walrus-mainnet.walrus.space")]
+    #[arg(
+        long,
+        env = "WALRUS_AGGREGATOR_URL",
+        default_value = "https://aggregator.walrus-mainnet.walrus.space"
+    )]
     pub aggregator_url: String,
 
     /// Path to Walrus CLI binary
@@ -162,7 +172,6 @@ pub struct Config {
     pub cli_capabilities: String,
 
     // === Fetch Strategy ===
-
     /// Fetch strategy: full-blob, byte-range, or adaptive
     ///
     /// Note: "byte-range" requires cli_capabilities="forked"
@@ -170,7 +179,6 @@ pub struct Config {
     pub fetch_strategy: String,
 
     // === Caching ===
-
     /// Directory for caching downloaded blobs
     #[arg(long, env = "WALRUS_CACHE_DIR")]
     pub cache_dir: Option<PathBuf>,
@@ -180,7 +188,6 @@ pub struct Config {
     pub cache_enabled: bool,
 
     // === Concurrency ===
-
     /// Number of blobs to process in parallel
     #[arg(long, env = "WALRUS_BLOB_CONCURRENCY", default_value = "4")]
     pub blob_concurrency: usize,
@@ -190,7 +197,6 @@ pub struct Config {
     pub range_concurrency: usize,
 
     // === Timeouts & Retries ===
-
     /// Timeout for CLI operations in seconds
     #[arg(long, env = "WALRUS_CLI_TIMEOUT_SECS", default_value = "180")]
     pub cli_timeout_secs: u64,
@@ -208,17 +214,19 @@ pub struct Config {
     pub retry_delay_secs: u64,
 
     // === Range Coalescing ===
-
     /// Maximum gap between checkpoints to coalesce into single range
     #[arg(long, env = "WALRUS_COALESCE_GAP_BYTES", default_value = "1048576")]
     pub coalesce_gap_bytes: u64,
 
     /// Maximum size of a coalesced range in bytes
-    #[arg(long, env = "WALRUS_COALESCE_MAX_RANGE_BYTES", default_value = "16777216")]
+    #[arg(
+        long,
+        env = "WALRUS_COALESCE_MAX_RANGE_BYTES",
+        default_value = "16777216"
+    )]
     pub coalesce_max_range_bytes: u64,
 
     // === Health Monitoring ===
-
     /// Enable node health monitoring for adaptive fetching
     #[arg(long, env = "WALRUS_HEALTH_MONITORING", default_value = "true")]
     pub health_monitoring: bool,
@@ -372,12 +380,20 @@ impl ConfigBuilder {
         };
 
         let config = Config {
-            archival_url: self.archival_url.unwrap_or_else(|| "https://walrus-sui-archival.mainnet.walrus.space".to_string()),
-            aggregator_url: self.aggregator_url.unwrap_or_else(|| "https://aggregator.walrus-mainnet.walrus.space".to_string()),
+            archival_url: self
+                .archival_url
+                .unwrap_or_else(|| "https://walrus-sui-archival.mainnet.walrus.space".to_string()),
+            aggregator_url: self
+                .aggregator_url
+                .unwrap_or_else(|| "https://aggregator.walrus-mainnet.walrus.space".to_string()),
             walrus_cli_path: self.walrus_cli_path,
-            walrus_cli_context: self.walrus_cli_context.unwrap_or_else(|| "mainnet".to_string()),
+            walrus_cli_context: self
+                .walrus_cli_context
+                .unwrap_or_else(|| "mainnet".to_string()),
             cli_capabilities: cli_capabilities_str,
-            fetch_strategy: self.fetch_strategy.unwrap_or_else(|| "full-blob".to_string()),
+            fetch_strategy: self
+                .fetch_strategy
+                .unwrap_or_else(|| "full-blob".to_string()),
             cache_dir: self.cache_dir,
             cache_enabled: self.cache_enabled.unwrap_or(false),
             blob_concurrency: self.blob_concurrency.unwrap_or(4),

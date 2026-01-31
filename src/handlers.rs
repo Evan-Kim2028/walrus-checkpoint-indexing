@@ -41,7 +41,11 @@ pub trait CheckpointHandler: Send {
     /// Called before streaming begins.
     ///
     /// Override this to perform any setup before checkpoints start flowing.
-    async fn on_start(&mut self, _start: CheckpointSequenceNumber, _end: CheckpointSequenceNumber) -> Result<()> {
+    async fn on_start(
+        &mut self,
+        _start: CheckpointSequenceNumber,
+        _end: CheckpointSequenceNumber,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -130,7 +134,11 @@ impl CheckpointHandler for LoggingHandler {
         Ok(())
     }
 
-    async fn on_start(&mut self, start: CheckpointSequenceNumber, end: CheckpointSequenceNumber) -> Result<()> {
+    async fn on_start(
+        &mut self,
+        start: CheckpointSequenceNumber,
+        end: CheckpointSequenceNumber,
+    ) -> Result<()> {
         self.start_time = std::time::Instant::now();
         tracing::info!("starting checkpoint stream: {} to {}", start, end);
         Ok(())
@@ -190,7 +198,10 @@ impl CheckpointHandler for CollectingHandler {
     async fn handle_checkpoint(&mut self, checkpoint: &CheckpointData) -> Result<()> {
         if let Some(max) = self.max_capacity {
             if self.checkpoints.len() >= max {
-                return Err(anyhow::anyhow!("exceeded max capacity of {} checkpoints", max));
+                return Err(anyhow::anyhow!(
+                    "exceeded max capacity of {} checkpoints",
+                    max
+                ));
             }
         }
         self.checkpoints.push(checkpoint.clone());
@@ -231,7 +242,11 @@ where
         Ok(())
     }
 
-    async fn on_start(&mut self, start: CheckpointSequenceNumber, end: CheckpointSequenceNumber) -> Result<()> {
+    async fn on_start(
+        &mut self,
+        start: CheckpointSequenceNumber,
+        end: CheckpointSequenceNumber,
+    ) -> Result<()> {
         self.inner.on_start(start, end).await
     }
 
@@ -272,7 +287,11 @@ where
         Ok(())
     }
 
-    async fn on_start(&mut self, start: CheckpointSequenceNumber, end: CheckpointSequenceNumber) -> Result<()> {
+    async fn on_start(
+        &mut self,
+        start: CheckpointSequenceNumber,
+        end: CheckpointSequenceNumber,
+    ) -> Result<()> {
         self.first.on_start(start, end).await?;
         self.second.on_start(start, end).await?;
         Ok(())

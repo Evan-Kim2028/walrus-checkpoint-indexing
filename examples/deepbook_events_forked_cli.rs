@@ -176,13 +176,10 @@ async fn read_byte_range(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        cmd.output(),
-    )
-    .await
-    .context("CLI timeout")?
-    .context("Failed to execute CLI")?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output())
+        .await
+        .context("CLI timeout")?
+        .context("Failed to execute CLI")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -209,13 +206,10 @@ async fn get_blob_size(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        cmd.output(),
-    )
-    .await
-    .context("CLI timeout")?
-    .context("Failed to execute CLI")?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output())
+        .await
+        .context("CLI timeout")?
+        .context("Failed to execute CLI")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -224,8 +218,8 @@ async fn get_blob_size(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Parse JSON response for size
-    let json: serde_json::Value = serde_json::from_str(&stdout)
-        .context("Failed to parse size response")?;
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).context("Failed to parse size response")?;
 
     json["blobSize"]
         .as_u64()
@@ -235,14 +229,21 @@ async fn get_blob_size(
 }
 
 /// Parse the blob index from footer bytes
-fn parse_blob_index_from_bytes(footer_bytes: &[u8], index_bytes: &[u8]) -> Result<Vec<BlobIndexEntry>> {
+fn parse_blob_index_from_bytes(
+    footer_bytes: &[u8],
+    index_bytes: &[u8],
+) -> Result<Vec<BlobIndexEntry>> {
     use byteorder::{LittleEndian, ReadBytesExt};
     use std::io::Cursor;
 
     let mut cursor = Cursor::new(footer_bytes);
     let magic = cursor.read_u32::<LittleEndian>()?;
     if magic != BLOB_FOOTER_MAGIC {
-        anyhow::bail!("Invalid blob footer magic: expected {:#x}, got {:#x}", BLOB_FOOTER_MAGIC, magic);
+        anyhow::bail!(
+            "Invalid blob footer magic: expected {:#x}, got {:#x}",
+            BLOB_FOOTER_MAGIC,
+            magic
+        );
     }
 
     let _version = cursor.read_u32::<LittleEndian>()?;
@@ -257,9 +258,9 @@ fn parse_blob_index_from_bytes(footer_bytes: &[u8], index_bytes: &[u8]) -> Resul
         let name_len = cursor.read_u32::<LittleEndian>()?;
         let mut name_bytes = vec![0u8; name_len as usize];
         cursor.read_exact(&mut name_bytes)?;
-        let name_str = String::from_utf8(name_bytes)
-            .context("Invalid UTF-8 in checkpoint name")?;
-        let checkpoint_number = name_str.parse::<u64>()
+        let name_str = String::from_utf8(name_bytes).context("Invalid UTF-8 in checkpoint name")?;
+        let checkpoint_number = name_str
+            .parse::<u64>()
             .context("Failed to parse checkpoint number")?;
         let offset = cursor.read_u64::<LittleEndian>()?;
         let length = cursor.read_u64::<LittleEndian>()?;
@@ -295,9 +296,7 @@ fn extract_package_events(
                 if &event.package_id == package_id {
                     let event_type = format!(
                         "{}::{}::{}",
-                        event.package_id,
-                        event.transaction_module,
-                        event.type_.name
+                        event.package_id, event.transaction_module, event.type_.name
                     );
 
                     events.push(ExtractedEvent {
@@ -320,20 +319,18 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Parse package ID
-    let package_id: ObjectID = args
-        .package
-        .parse()
-        .context("Invalid package ID format")?;
+    let package_id: ObjectID = args.package.parse().context("Invalid package ID format")?;
 
-    let blob_id = args.blob_id.clone().unwrap_or_else(|| SAMPLE_BLOB_ID.to_string());
+    let blob_id = args
+        .blob_id
+        .clone()
+        .unwrap_or_else(|| SAMPLE_BLOB_ID.to_string());
 
     // Determine checkpoint range - default to entire blob
     let start_cp = args.start.unwrap_or(SAMPLE_BLOB_START);
-    let end_cp = args.end.unwrap_or_else(|| {
-        match args.max_checkpoints {
-            Some(max) => (start_cp + max).min(SAMPLE_BLOB_END + 1),
-            None => SAMPLE_BLOB_END + 1,
-        }
+    let end_cp = args.end.unwrap_or_else(|| match args.max_checkpoints {
+        Some(max) => (start_cp + max).min(SAMPLE_BLOB_END + 1),
+        None => SAMPLE_BLOB_END + 1,
     });
 
     println!("═══════════════════════════════════════════════════════════════");
@@ -345,7 +342,12 @@ async fn main() -> Result<()> {
     println!("  Context: {}", args.context);
     println!("  Package filter: {}", args.package);
     println!("  Blob ID: {}", blob_id);
-    println!("  Checkpoint range: {} to {} ({} checkpoints)", start_cp, end_cp, end_cp - start_cp);
+    println!(
+        "  Checkpoint range: {} to {} ({} checkpoints)",
+        start_cp,
+        end_cp,
+        end_cp - start_cp
+    );
     println!("  Concurrency: {} parallel requests", args.concurrency);
     println!("  Timeout: {}s per request", args.timeout_secs);
     println!();
@@ -356,7 +358,13 @@ async fn main() -> Result<()> {
     let step1_start = Instant::now();
 
     // Get blob size
-    let blob_size = get_blob_size(&args.walrus_cli_path, &blob_id, &args.context, args.timeout_secs).await?;
+    let blob_size = get_blob_size(
+        &args.walrus_cli_path,
+        &blob_id,
+        &args.context,
+        args.timeout_secs,
+    )
+    .await?;
     println!("  Blob size: {:.2} MB", blob_size as f64 / 1_000_000.0);
 
     // Read footer (last 24 bytes)
@@ -367,7 +375,8 @@ async fn main() -> Result<()> {
         blob_size - 24,
         24,
         args.timeout_secs,
-    ).await?;
+    )
+    .await?;
 
     // Parse footer to get index offset
     use byteorder::{LittleEndian, ReadBytesExt};
@@ -385,14 +394,21 @@ async fn main() -> Result<()> {
         index_offset,
         index_len,
         args.timeout_secs,
-    ).await?;
+    )
+    .await?;
 
     let index = parse_blob_index_from_bytes(&footer_bytes, &index_bytes)?;
     println!("  Found {} checkpoints in blob index", index.len());
     if let (Some(first), Some(last)) = (index.first(), index.last()) {
-        println!("  Range: {} to {}", first.checkpoint_number, last.checkpoint_number);
+        println!(
+            "  Range: {} to {}",
+            first.checkpoint_number, last.checkpoint_number
+        );
     }
-    println!("  Index fetch time: {:.2}s", step1_start.elapsed().as_secs_f64());
+    println!(
+        "  Index fetch time: {:.2}s",
+        step1_start.elapsed().as_secs_f64()
+    );
     println!();
 
     println!("Step 2: Stream checkpoints in parallel (byte-range)");
@@ -411,7 +427,10 @@ async fn main() -> Result<()> {
         .collect();
 
     let total_to_process = entries_to_process.len();
-    println!("  Processing {} checkpoints with {} parallel requests...", total_to_process, args.concurrency);
+    println!(
+        "  Processing {} checkpoints with {} parallel requests...",
+        total_to_process, args.concurrency
+    );
 
     // Create semaphore for concurrency control
     let semaphore = Arc::new(Semaphore::new(args.concurrency));
@@ -444,38 +463,61 @@ async fn main() -> Result<()> {
                     entry.offset,
                     entry.length,
                     timeout_secs,
-                ).await {
+                )
+                .await
+                {
                     Ok(b) => b,
                     Err(e) => {
-                        eprintln!("  Error fetching checkpoint {}: {}", entry.checkpoint_number, e);
+                        eprintln!(
+                            "  Error fetching checkpoint {}: {}",
+                            entry.checkpoint_number, e
+                        );
                         return;
                     }
                 };
 
-                metrics.bytes_downloaded.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                metrics
+                    .bytes_downloaded
+                    .fetch_add(bytes.len() as u64, Ordering::Relaxed);
 
                 // Parse checkpoint
                 let checkpoint = match Blob::from_bytes::<CheckpointData>(&bytes) {
                     Ok(cp) => cp,
                     Err(e) => {
-                        eprintln!("  Error parsing checkpoint {}: {}", entry.checkpoint_number, e);
+                        eprintln!(
+                            "  Error parsing checkpoint {}: {}",
+                            entry.checkpoint_number, e
+                        );
                         return;
                     }
                 };
 
                 // Extract events
-                let (events, total_events, tx_count) = extract_package_events(&checkpoint, &package_id);
+                let (events, total_events, tx_count) =
+                    extract_package_events(&checkpoint, &package_id);
 
-                metrics.checkpoints_processed.fetch_add(1, Ordering::Relaxed);
-                metrics.transactions_scanned.fetch_add(tx_count, Ordering::Relaxed);
-                metrics.total_events.fetch_add(total_events, Ordering::Relaxed);
-                metrics.matching_events.fetch_add(events.len() as u64, Ordering::Relaxed);
+                metrics
+                    .checkpoints_processed
+                    .fetch_add(1, Ordering::Relaxed);
+                metrics
+                    .transactions_scanned
+                    .fetch_add(tx_count, Ordering::Relaxed);
+                metrics
+                    .total_events
+                    .fetch_add(total_events, Ordering::Relaxed);
+                metrics
+                    .matching_events
+                    .fetch_add(events.len() as u64, Ordering::Relaxed);
 
                 // Update event type counts
                 {
                     let mut counts = event_type_counts.lock().await;
                     for event in &events {
-                        let short_type = event.event_type.split("::").last().unwrap_or(&event.event_type);
+                        let short_type = event
+                            .event_type
+                            .split("::")
+                            .last()
+                            .unwrap_or(&event.event_type);
                         *counts.entry(short_type.to_string()).or_insert(0) += 1;
                     }
                 }
@@ -544,10 +586,16 @@ async fn main() -> Result<()> {
     if args.verbose && !all_events.is_empty() {
         println!("Sample Events (first 10):");
         for event in all_events.iter().take(10) {
-            println!("  Checkpoint {}: {} - {}",
-                     event.checkpoint,
-                     event.module,
-                     event.event_type.split("::").last().unwrap_or(&event.event_type));
+            println!(
+                "  Checkpoint {}: {} - {}",
+                event.checkpoint,
+                event.module,
+                event
+                    .event_type
+                    .split("::")
+                    .last()
+                    .unwrap_or(&event.event_type)
+            );
             println!("    TX: {}", event.tx_digest);
         }
         println!();
@@ -556,9 +604,18 @@ async fn main() -> Result<()> {
     println!("Performance Metrics:");
     println!("  Checkpoints processed: {}", checkpoints_processed);
     println!("  Time elapsed: {:.2}s", elapsed_secs);
-    println!("  Throughput: {:.2} checkpoints/sec", checkpoints_processed as f64 / elapsed_secs);
-    println!("  Data downloaded: {:.2} MB", bytes_downloaded as f64 / 1_000_000.0);
-    println!("  Download speed: {:.2} MB/s", (bytes_downloaded as f64 / 1_000_000.0) / elapsed_secs);
+    println!(
+        "  Throughput: {:.2} checkpoints/sec",
+        checkpoints_processed as f64 / elapsed_secs
+    );
+    println!(
+        "  Data downloaded: {:.2} MB",
+        bytes_downloaded as f64 / 1_000_000.0
+    );
+    println!(
+        "  Download speed: {:.2} MB/s",
+        (bytes_downloaded as f64 / 1_000_000.0) / elapsed_secs
+    );
     println!("  Concurrency: {} parallel requests", args.concurrency);
     println!();
 

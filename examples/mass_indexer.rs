@@ -197,11 +197,8 @@ impl Processor for StatsProcessor {
                         filtered_event_count += 1;
 
                         // Track event types
-                        let event_type = format!(
-                            "{}::{}",
-                            event.transaction_module,
-                            event.type_.name
-                        );
+                        let event_type =
+                            format!("{}::{}", event.transaction_module, event.type_.name);
                         *event_types.entry(event_type).or_insert(0) += 1;
                     }
                 }
@@ -217,7 +214,11 @@ impl Processor for StatsProcessor {
         })
     }
 
-    async fn commit(&mut self, _checkpoint_num: CheckpointSequenceNumber, data: Self::Output) -> Result<()> {
+    async fn commit(
+        &mut self,
+        _checkpoint_num: CheckpointSequenceNumber,
+        data: Self::Output,
+    ) -> Result<()> {
         let mut stats = self.stats.write().await;
 
         stats.total_checkpoints += 1;
@@ -250,7 +251,11 @@ impl Processor for StatsProcessor {
         Ok(())
     }
 
-    async fn on_start(&mut self, start: CheckpointSequenceNumber, end: CheckpointSequenceNumber) -> Result<()> {
+    async fn on_start(
+        &mut self,
+        start: CheckpointSequenceNumber,
+        end: CheckpointSequenceNumber,
+    ) -> Result<()> {
         println!("Starting mass indexer: checkpoints {} to {}", start, end);
         if let Some(pkg) = &self.package_filter {
             println!("Filtering events by package: {}", pkg);
@@ -259,7 +264,10 @@ impl Processor for StatsProcessor {
     }
 
     async fn on_complete(&mut self, total_processed: u64) -> Result<()> {
-        println!("\nIndexing complete: {} checkpoints processed", total_processed);
+        println!(
+            "\nIndexing complete: {} checkpoints processed",
+            total_processed
+        );
         Ok(())
     }
 }
@@ -289,8 +297,12 @@ async fn main() -> Result<()> {
     let range = args.start..end_checkpoint;
 
     println!("Configuration:");
-    println!("  Checkpoint range: {} to {} ({} checkpoints)",
-             range.start, range.end, range.end - range.start);
+    println!(
+        "  Checkpoint range: {} to {} ({} checkpoints)",
+        range.start,
+        range.end,
+        range.end - range.start
+    );
     if let Some(pkg) = &package_filter {
         println!("  Package filter: {}", pkg);
     } else {
@@ -369,7 +381,10 @@ async fn main() -> Result<()> {
     println!();
 
     println!("Checkpoint Summary:");
-    println!("  Total checkpoints processed: {}", final_stats.total_checkpoints);
+    println!(
+        "  Total checkpoints processed: {}",
+        final_stats.total_checkpoints
+    );
     if let (Some(first), Some(last)) = (final_stats.first_checkpoint, final_stats.last_checkpoint) {
         println!("  Checkpoint range: {} to {}", first, last);
     }
@@ -396,10 +411,16 @@ async fn main() -> Result<()> {
 
     println!("Performance:");
     println!("  Total time: {:.2}s", result.elapsed_secs);
-    println!("  Throughput: {:.2} checkpoints/sec", result.checkpoints_per_sec());
+    println!(
+        "  Throughput: {:.2} checkpoints/sec",
+        result.checkpoints_per_sec()
+    );
     println!("  Data downloaded: {:.2} MB", result.mb_downloaded());
     if result.elapsed_secs > 0.0 {
-        println!("  Download speed: {:.2} MB/s", result.mb_downloaded() / result.elapsed_secs);
+        println!(
+            "  Download speed: {:.2} MB/s",
+            result.mb_downloaded() / result.elapsed_secs
+        );
     }
     println!();
 
@@ -414,10 +435,18 @@ async fn main() -> Result<()> {
         && final_stats.total_transactions > 0;
 
     if verification_passed {
-        println!("  [PASS] Checkpoints processed: {} (expected > 0)", final_stats.total_checkpoints);
-        println!("  [PASS] Stats match: processor={}, indexer={}",
-                 final_stats.total_checkpoints, result.checkpoints_processed);
-        println!("  [PASS] Transactions found: {} (expected > 0)", final_stats.total_transactions);
+        println!(
+            "  [PASS] Checkpoints processed: {} (expected > 0)",
+            final_stats.total_checkpoints
+        );
+        println!(
+            "  [PASS] Stats match: processor={}, indexer={}",
+            final_stats.total_checkpoints, result.checkpoints_processed
+        );
+        println!(
+            "  [PASS] Transactions found: {} (expected > 0)",
+            final_stats.total_transactions
+        );
         println!();
         println!("  Mass indexer pipeline verified successfully!");
     } else {
@@ -426,8 +455,10 @@ async fn main() -> Result<()> {
             println!("    - No checkpoints processed");
         }
         if final_stats.total_checkpoints != result.checkpoints_processed {
-            println!("    - Stats mismatch: processor={}, indexer={}",
-                     final_stats.total_checkpoints, result.checkpoints_processed);
+            println!(
+                "    - Stats mismatch: processor={}, indexer={}",
+                final_stats.total_checkpoints, result.checkpoints_processed
+            );
         }
         if final_stats.total_transactions == 0 {
             println!("    - No transactions found");

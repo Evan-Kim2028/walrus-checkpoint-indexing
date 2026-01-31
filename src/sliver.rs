@@ -204,7 +204,8 @@ impl SliverPredictor {
 
         // Calculate how many symbols/slivers this blob actually uses
         let total_symbols = (blob_size + self.symbol_size - 1) / self.symbol_size;
-        let actual_primary_slivers = (total_symbols + SOURCE_SYMBOLS_SECONDARY - 1) / SOURCE_SYMBOLS_SECONDARY;
+        let actual_primary_slivers =
+            (total_symbols + SOURCE_SYMBOLS_SECONDARY - 1) / SOURCE_SYMBOLS_SECONDARY;
         let actual_primary_slivers = actual_primary_slivers.min(SOURCE_SYMBOLS_PRIMARY);
 
         // Find which primary slivers are problematic
@@ -319,10 +320,17 @@ impl SliverPredictor {
     }
 
     /// Get recommended fetching parameters for a range
-    pub fn get_fetch_params(&self, blob_id: &str, range: &Range<u64>, base_concurrency: usize, base_timeout_secs: u64) -> FetchParams {
+    pub fn get_fetch_params(
+        &self,
+        blob_id: &str,
+        range: &Range<u64>,
+        base_concurrency: usize,
+        base_timeout_secs: u64,
+    ) -> FetchParams {
         let risk = self.classify_range(blob_id, range);
 
-        let concurrency = ((base_concurrency as f64) * risk.concurrency_multiplier()).ceil() as usize;
+        let concurrency =
+            ((base_concurrency as f64) * risk.concurrency_multiplier()).ceil() as usize;
         let timeout_secs = ((base_timeout_secs as f64) * risk.timeout_multiplier()).ceil() as u64;
 
         FetchParams {
@@ -334,7 +342,12 @@ impl SliverPredictor {
     }
 
     /// Split a range into safe and risky sub-ranges for optimized fetching
-    pub fn split_range_by_risk(&self, blob_id: &str, range: Range<u64>, blob_size: u64) -> RangeSplit {
+    pub fn split_range_by_risk(
+        &self,
+        blob_id: &str,
+        range: Range<u64>,
+        blob_size: u64,
+    ) -> RangeSplit {
         let analysis = match self.analyze_blob(blob_id, blob_size) {
             Some(a) => a,
             None => {
@@ -404,7 +417,7 @@ fn range_overlap(a: &Range<u64>, b: &Range<u64>) -> Option<Range<u64>> {
 fn base64_url_decode(input: &str) -> Option<Vec<u8>> {
     // base64url uses - and _ instead of + and /
     // and may omit padding
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     URL_SAFE_NO_PAD.decode(input).ok()
 }
 
@@ -446,8 +459,11 @@ mod tests {
             for sliver in [0, 50, 333, 500, 999] {
                 let shard = predictor.sliver_to_shard(sliver, rotation);
                 let recovered_sliver = predictor.shard_to_sliver(shard, rotation);
-                assert_eq!(sliver, recovered_sliver,
-                    "sliver={}, rotation={}, shard={}", sliver, rotation, shard);
+                assert_eq!(
+                    sliver, recovered_sliver,
+                    "sliver={}, rotation={}, shard={}",
+                    sliver, rotation, shard
+                );
             }
         }
     }

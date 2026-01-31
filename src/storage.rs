@@ -36,8 +36,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use sui_types::full_checkpoint_content::CheckpointData;
@@ -48,7 +48,7 @@ use tokio::sync::RwLock;
 use crate::blob::BlobMetadata;
 use crate::config::Config;
 use crate::node_health::NodeHealthTracker;
-use crate::sliver::{SliverPredictor, BlobAnalysis, RangeRisk};
+use crate::sliver::{BlobAnalysis, RangeRisk, SliverPredictor};
 
 /// Parsed index entry from a blob
 #[derive(Debug, Clone)]
@@ -180,7 +180,10 @@ struct Inner {
 impl WalrusStorage {
     /// Create a new Walrus storage instance from configuration
     pub async fn new(config: Config) -> Result<Self> {
-        let cache_dir = config.cache_dir.clone().unwrap_or_else(|| PathBuf::from(".walrus-cache"));
+        let cache_dir = config
+            .cache_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(".walrus-cache"));
 
         // Create cache directory if caching is enabled (for CLI or HTTP)
         if config.cache_enabled {
@@ -250,7 +253,7 @@ impl WalrusStorage {
         DownloadStats {
             bytes_downloaded: self.bytes_downloaded(),
             timeout_count: self.timeout_count(),
-            ranges_fetched: 0, // TODO: track this
+            ranges_fetched: 0,        // TODO: track this
             checkpoints_processed: 0, // TODO: track this
         }
     }
@@ -283,18 +286,26 @@ impl WalrusStorage {
     /// Check if health poll is needed based on timeout count
     async fn maybe_poll_health_on_timeout(&self) {
         let current_timeouts = self.inner.timeout_count.load(Ordering::Relaxed);
-        let last_poll_timeouts = self.inner.last_health_poll_timeout_count.load(Ordering::Relaxed);
+        let last_poll_timeouts = self
+            .inner
+            .last_health_poll_timeout_count
+            .load(Ordering::Relaxed);
 
         if current_timeouts >= last_poll_timeouts + 3 {
             if let Some(tracker) = &self.inner.health_tracker {
                 if tracker.needs_poll().await {
-                    tracing::info!("triggering health poll due to {} new timeouts", current_timeouts - last_poll_timeouts);
+                    tracing::info!(
+                        "triggering health poll due to {} new timeouts",
+                        current_timeouts - last_poll_timeouts
+                    );
                     if let Err(e) = self.poll_node_health().await {
                         tracing::warn!("failed to poll node health: {}", e);
                     } else {
                         self.update_sliver_predictor().await;
                     }
-                    self.inner.last_health_poll_timeout_count.store(current_timeouts, Ordering::Relaxed);
+                    self.inner
+                        .last_health_poll_timeout_count
+                        .store(current_timeouts, Ordering::Relaxed);
                 }
             }
         }
@@ -353,10 +364,14 @@ impl WalrusStorage {
 
     /// Initialize by fetching blob metadata from archival service
     pub async fn initialize(&self) -> Result<()> {
-        tracing::info!("fetching Walrus blob metadata from: {}", self.inner.archival_url);
+        tracing::info!(
+            "fetching Walrus blob metadata from: {}",
+            self.inner.archival_url
+        );
 
         let url = format!("{}/v1/app_blobs", self.inner.archival_url);
-        let response = self.inner
+        let response = self
+            .inner
             .client
             .get(&url)
             .send()
@@ -383,11 +398,7 @@ impl WalrusStorage {
             .map(|b| b.start_checkpoint)
             .min()
             .unwrap_or(0);
-        let max_end = metadata
-            .iter()
-            .map(|b| b.end_checkpoint)
-            .max()
-            .unwrap_or(0);
+        let max_end = metadata.iter().map(|b| b.end_checkpoint).max().unwrap_or(0);
 
         tracing::info!(
             "fetched {} Walrus blobs covering checkpoints {}..{}",
@@ -409,10 +420,16 @@ impl WalrusStorage {
                         summary.problematic_shards
                     );
                     if !summary.down_node_names.is_empty() {
-                        tracing::warn!("DOWN nodes at startup: {}", summary.down_node_names.join(", "));
+                        tracing::warn!(
+                            "DOWN nodes at startup: {}",
+                            summary.down_node_names.join(", ")
+                        );
                     }
                     self.update_sliver_predictor().await;
-                    tracing::info!("sliver predictor initialized with {} problematic shards", summary.problematic_shards);
+                    tracing::info!(
+                        "sliver predictor initialized with {} problematic shards",
+                        summary.problematic_shards
+                    );
                 }
                 Err(e) => {
                     tracing::warn!("failed to poll initial node health: {}", e);
@@ -550,7 +567,10 @@ impl WalrusStorage {
     }
 
     /// Get a single checkpoint
-    pub async fn get_checkpoint(&self, checkpoint: CheckpointSequenceNumber) -> Result<CheckpointData> {
+    pub async fn get_checkpoint(
+        &self,
+        checkpoint: CheckpointSequenceNumber,
+    ) -> Result<CheckpointData> {
         let blob = self
             .find_blob_for_checkpoint(checkpoint)
             .await
@@ -558,10 +578,13 @@ impl WalrusStorage {
 
         let index = self.load_blob_index(&blob.blob_id).await?;
 
-        let entry = index.get(&checkpoint)
+        let entry = index
+            .get(&checkpoint)
             .ok_or_else(|| anyhow::anyhow!("checkpoint {} not found in blob index", checkpoint))?;
 
-        let cp_bytes = self.download_range(&blob.blob_id, entry.offset, entry.length).await?;
+        let cp_bytes = self
+            .download_range(&blob.blob_id, entry.offset, entry.length)
+            .await?;
 
         let checkpoint_data = sui_storage::blob::Blob::from_bytes::<CheckpointData>(&cp_bytes)
             .with_context(|| format!("failed to deserialize checkpoint {}", checkpoint))?;
@@ -575,7 +598,8 @@ impl WalrusStorage {
         range: std::ops::Range<CheckpointSequenceNumber>,
     ) -> Result<Vec<CheckpointData>> {
         let metadata = self.inner.metadata.read().await;
-        let blobs: Vec<BlobMetadata> = metadata.iter()
+        let blobs: Vec<BlobMetadata> = metadata
+            .iter()
             .filter(|b| b.end_checkpoint >= range.start && b.start_checkpoint < range.end)
             .cloned()
             .collect();
@@ -602,7 +626,11 @@ impl WalrusStorage {
                     // Refresh node health when starting a new blob (only when streaming, not caching)
                     if !storage.inner.cache_enabled {
                         if let Err(e) = storage.poll_node_health().await {
-                            tracing::debug!("failed to refresh node health for blob {}: {}", blob.blob_id, e);
+                            tracing::debug!(
+                                "failed to refresh node health for blob {}: {}",
+                                blob.blob_id,
+                                e
+                            );
                         } else {
                             storage.update_sliver_predictor().await;
                         }
@@ -648,15 +676,22 @@ impl WalrusStorage {
                         }
                     }
 
-                    let chunk_size = if storage.inner.walrus_cli_path.is_some() { tasks.len() } else { 200 };
+                    let chunk_size = if storage.inner.walrus_cli_path.is_some() {
+                        tasks.len()
+                    } else {
+                        200
+                    };
                     let mut results = Vec::new();
 
                     let max_gap_bytes = storage.inner.coalesce_gap_bytes;
                     let max_range_bytes = storage.inner.coalesce_max_range_bytes;
 
                     for chunk in tasks.chunks(chunk_size) {
-                        let pending: Vec<(CheckpointSequenceNumber, BlobIndexEntry, ())> =
-                            chunk.iter().cloned().map(|(cp_num, entry)| (cp_num, entry, ())).collect();
+                        let pending: Vec<(CheckpointSequenceNumber, BlobIndexEntry, ())> = chunk
+                            .iter()
+                            .cloned()
+                            .map(|(cp_num, entry)| (cp_num, entry, ()))
+                            .collect();
 
                         let coalesced = coalesce_entries(&pending, max_gap_bytes, max_range_bytes);
 
@@ -681,12 +716,17 @@ impl WalrusStorage {
 
                                     let mut decoded = Vec::with_capacity(range.entries.len());
                                     for (cp_num, entry, _) in range.entries {
-                                        let start = entry.offset.saturating_sub(range.start) as usize;
+                                        let start =
+                                            entry.offset.saturating_sub(range.start) as usize;
                                         let end = start + entry.length as usize;
-                                        let checkpoint = sui_storage::blob::Blob::from_bytes::<CheckpointData>(
-                                            &bytes[start..end],
+                                        let checkpoint = sui_storage::blob::Blob::from_bytes::<
+                                            CheckpointData,
+                                        >(
+                                            &bytes[start..end]
                                         )
-                                        .with_context(|| format!("failed to deserialize checkpoint {}", cp_num))?;
+                                        .with_context(|| {
+                                            format!("failed to deserialize checkpoint {}", cp_num)
+                                        })?;
                                         decoded.push(checkpoint);
                                     }
                                     Ok(decoded)
@@ -756,7 +796,10 @@ impl WalrusStorage {
     }
 
     async fn download_blob_via_cli(&self, blob_id: &str) -> Result<PathBuf> {
-        let cli_path = self.inner.walrus_cli_path.as_ref()
+        let cli_path = self
+            .inner
+            .walrus_cli_path
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Walrus CLI path not configured"))?;
 
         let output_path = self.get_cached_blob_path(blob_id);
@@ -765,7 +808,11 @@ impl WalrusStorage {
             return Ok(output_path);
         }
 
-        tracing::info!("Starting download of blob {} via CLI to {}", blob_id, output_path.display());
+        tracing::info!(
+            "Starting download of blob {} via CLI to {}",
+            blob_id,
+            output_path.display()
+        );
         let start_time = Instant::now();
 
         let mut cmd = Command::new(cli_path);
@@ -789,9 +836,12 @@ impl WalrusStorage {
 
         let elapsed = start_time.elapsed();
         let size_bytes = output_path.metadata()?.len();
-        self.inner.bytes_downloaded.fetch_add(size_bytes, Ordering::Relaxed);
+        self.inner
+            .bytes_downloaded
+            .fetch_add(size_bytes, Ordering::Relaxed);
         let size_mb = size_bytes as f64 / 1_000_000.0;
-        tracing::info!("Finished download of blob {} in {:.2}s ({:.2} MB/s, total size: {:.2} MB)",
+        tracing::info!(
+            "Finished download of blob {} in {:.2}s ({:.2} MB/s, total size: {:.2} MB)",
             blob_id,
             elapsed.as_secs_f64(),
             size_mb / elapsed.as_secs_f64(),
@@ -835,39 +885,52 @@ impl WalrusStorage {
             return Ok(output_path);
         }
 
-        tracing::info!("Starting download of blob {} via HTTP to {}", blob_id, output_path.display());
+        tracing::info!(
+            "Starting download of blob {} via HTTP to {}",
+            blob_id,
+            output_path.display()
+        );
         let start_time = Instant::now();
 
         let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
 
-        let bytes = self.with_retry(|| {
-            let client = self.inner.client.clone();
-            let url = url.clone();
-            async move {
-                let response = client.get(&url)
-                    .timeout(Duration::from_secs(600)) // 10 min timeout for large blobs
-                    .send()
-                    .await?;
+        let bytes = self
+            .with_retry(|| {
+                let client = self.inner.client.clone();
+                let url = url.clone();
+                async move {
+                    let response = client
+                        .get(&url)
+                        .timeout(Duration::from_secs(600)) // 10 min timeout for large blobs
+                        .send()
+                        .await?;
 
-                if !response.status().is_success() {
-                    return Err(anyhow::anyhow!("status {}", response.status()));
+                    if !response.status().is_success() {
+                        return Err(anyhow::anyhow!("status {}", response.status()));
+                    }
+                    Ok(response.bytes().await?.to_vec())
                 }
-                Ok(response.bytes().await?.to_vec())
-            }
-        }).await.with_context(|| format!("failed to download blob {}", blob_id))?;
+            })
+            .await
+            .with_context(|| format!("failed to download blob {}", blob_id))?;
 
         // Write to temp file then rename for atomicity
         let temp_path = output_path.with_extension("tmp");
-        tokio::fs::write(&temp_path, &bytes).await
+        tokio::fs::write(&temp_path, &bytes)
+            .await
             .with_context(|| format!("failed to write blob to {:?}", temp_path))?;
-        tokio::fs::rename(&temp_path, &output_path).await
+        tokio::fs::rename(&temp_path, &output_path)
+            .await
             .with_context(|| format!("failed to rename {:?} to {:?}", temp_path, output_path))?;
 
         let elapsed = start_time.elapsed();
         let size_bytes = bytes.len() as u64;
-        self.inner.bytes_downloaded.fetch_add(size_bytes, Ordering::Relaxed);
+        self.inner
+            .bytes_downloaded
+            .fetch_add(size_bytes, Ordering::Relaxed);
         let size_mb = size_bytes as f64 / 1_000_000.0;
-        tracing::info!("Finished download of blob {} in {:.2}s ({:.2} MB/s, total size: {:.2} MB)",
+        tracing::info!(
+            "Finished download of blob {} in {:.2}s ({:.2} MB/s, total size: {:.2} MB)",
             blob_id,
             elapsed.as_secs_f64(),
             size_mb / elapsed.as_secs_f64(),
@@ -878,7 +941,10 @@ impl WalrusStorage {
     }
 
     async fn read_range_via_cli(&self, blob_id: &str, start: u64, length: u64) -> Result<Vec<u8>> {
-        let cli_path = self.inner.walrus_cli_path.as_ref()
+        let cli_path = self
+            .inner
+            .walrus_cli_path
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Walrus CLI path not configured"))?;
 
         let t0 = Instant::now();
@@ -901,7 +967,9 @@ impl WalrusStorage {
         }
 
         let elapsed = t0.elapsed().as_secs_f64().max(1e-6);
-        self.inner.bytes_downloaded.fetch_add(output.stdout.len() as u64, Ordering::Relaxed);
+        self.inner
+            .bytes_downloaded
+            .fetch_add(output.stdout.len() as u64, Ordering::Relaxed);
         let len = output.stdout.len() as u64;
         if len >= 4 * 1024 * 1024 {
             let mb = len as f64 / 1_000_000.0;
@@ -965,7 +1033,10 @@ impl WalrusStorage {
             }
         }
 
-        let cli_path = self.inner.walrus_cli_path.as_ref()
+        let cli_path = self
+            .inner
+            .walrus_cli_path
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Walrus CLI path not configured"))?;
 
         let mut stdout = String::new();
@@ -1019,7 +1090,12 @@ impl WalrusStorage {
             size = Some(s);
         }
 
-        let size = size.ok_or_else(|| anyhow::anyhow!("unable to parse blob size from walrus cli output: {}", trimmed))?;
+        let size = size.ok_or_else(|| {
+            anyhow::anyhow!(
+                "unable to parse blob size from walrus cli output: {}",
+                trimmed
+            )
+        })?;
 
         let mut cache = self.inner.blob_size_cache.write().await;
         cache.insert(blob_id.to_string(), size);
@@ -1071,7 +1147,14 @@ impl WalrusStorage {
                 let length = cursor.read_u64::<LittleEndian>()?;
                 let _entry_crc = cursor.read_u32::<LittleEndian>()?;
 
-                index.insert(checkpoint_number, BlobIndexEntry { checkpoint_number, offset, length });
+                index.insert(
+                    checkpoint_number,
+                    BlobIndexEntry {
+                        checkpoint_number,
+                        offset,
+                        length,
+                    },
+                );
             }
 
             let mut cache = self.inner.index_cache.write().await;
@@ -1088,7 +1171,9 @@ impl WalrusStorage {
             }
 
             let footer_start = total_size - 24;
-            let footer_bytes = self.read_range_via_cli_resilient(blob_id, footer_start, 24).await?;
+            let footer_bytes = self
+                .read_range_via_cli_resilient(blob_id, footer_start, 24)
+                .await?;
 
             if footer_bytes.len() != 24 {
                 return Err(anyhow::anyhow!(
@@ -1117,7 +1202,9 @@ impl WalrusStorage {
             }
 
             let index_len = total_size - index_start_offset;
-            let index_bytes = self.read_range_via_cli_resilient(blob_id, index_start_offset, index_len).await?;
+            let index_bytes = self
+                .read_range_via_cli_resilient(blob_id, index_start_offset, index_len)
+                .await?;
 
             let mut cursor = Cursor::new(&index_bytes);
             let mut index = HashMap::with_capacity(count as usize);
@@ -1151,24 +1238,27 @@ impl WalrusStorage {
         tracing::info!("fetching index for blob {} from aggregator", blob_id);
 
         let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
-        let footer_bytes = self.with_retry(|| {
-            let client = self.inner.client.clone();
-            let url = url.clone();
-            async move {
-                let response = client.get(&url)
-                    .header("Range", "bytes=-24")
-                    .send()
-                    .await?;
+        let footer_bytes = self
+            .with_retry(|| {
+                let client = self.inner.client.clone();
+                let url = url.clone();
+                async move {
+                    let response = client.get(&url).header("Range", "bytes=-24").send().await?;
 
-                if !response.status().is_success() {
-                    return Err(anyhow::anyhow!("status {}", response.status()));
+                    if !response.status().is_success() {
+                        return Err(anyhow::anyhow!("status {}", response.status()));
+                    }
+                    Ok(response.bytes().await?)
                 }
-                Ok(response.bytes().await?)
-            }
-        }).await.with_context(|| format!("failed to fetch footer for blob {}", blob_id))?;
+            })
+            .await
+            .with_context(|| format!("failed to fetch footer for blob {}", blob_id))?;
 
         if footer_bytes.len() != 24 {
-            return Err(anyhow::anyhow!("invalid footer length: {}", footer_bytes.len()));
+            return Err(anyhow::anyhow!(
+                "invalid footer length: {}",
+                footer_bytes.len()
+            ));
         }
 
         let mut cursor = Cursor::new(&footer_bytes);
@@ -1181,21 +1271,25 @@ impl WalrusStorage {
         let index_start_offset = cursor.read_u64::<LittleEndian>()?;
         let count = cursor.read_u32::<LittleEndian>()?;
 
-        let index_bytes = self.with_retry(|| {
-            let client = self.inner.client.clone();
-            let url = url.clone();
-            async move {
-                let response = client.get(&url)
-                    .header("Range", format!("bytes={}-", index_start_offset))
-                    .send()
-                    .await?;
+        let index_bytes = self
+            .with_retry(|| {
+                let client = self.inner.client.clone();
+                let url = url.clone();
+                async move {
+                    let response = client
+                        .get(&url)
+                        .header("Range", format!("bytes={}-", index_start_offset))
+                        .send()
+                        .await?;
 
-                if !response.status().is_success() {
-                    return Err(anyhow::anyhow!("status {}", response.status()));
+                    if !response.status().is_success() {
+                        return Err(anyhow::anyhow!("status {}", response.status()));
+                    }
+                    Ok(response.bytes().await?)
                 }
-                Ok(response.bytes().await?)
-            }
-        }).await.with_context(|| format!("failed to fetch index for blob {}", blob_id))?;
+            })
+            .await
+            .with_context(|| format!("failed to fetch index for blob {}", blob_id))?;
 
         let mut cursor = Cursor::new(&index_bytes);
         let mut index = HashMap::with_capacity(count as usize);
@@ -1205,8 +1299,8 @@ impl WalrusStorage {
             let mut name_bytes = vec![0u8; name_len as usize];
             cursor.read_exact(&mut name_bytes)?;
 
-            let name_str = String::from_utf8(name_bytes)
-                .context("invalid utf8 in checkpoint name")?;
+            let name_str =
+                String::from_utf8(name_bytes).context("invalid utf8 in checkpoint name")?;
             let checkpoint_number = name_str
                 .parse::<u64>()
                 .context("invalid checkpoint number string")?;
@@ -1245,7 +1339,11 @@ impl WalrusStorage {
                 Ok(res) => return Ok(res),
                 Err(e) if attempts < max_attempts => {
                     attempts += 1;
-                    tracing::warn!("aggregator request failed (attempt {}): {}. Retrying...", attempts, e);
+                    tracing::warn!(
+                        "aggregator request failed (attempt {}): {}. Retrying...",
+                        attempts,
+                        e
+                    );
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
                 Err(e) => return Err(e),
@@ -1282,37 +1380,50 @@ impl WalrusStorage {
 
         // Streaming mode (no caching) - use CLI range reads if available
         if self.inner.walrus_cli_path.is_some() {
-            return self.read_range_via_cli_resilient(blob_id, start, length).await;
+            return self
+                .read_range_via_cli_resilient(blob_id, start, length)
+                .await;
         }
 
         // Fallback to HTTP range requests (no caching, no CLI)
         let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
         let end = start + length - 1;
 
-        tracing::debug!("downloading range {}-{} (len {}) from {}", start, end, length, blob_id);
+        tracing::debug!(
+            "downloading range {}-{} (len {}) from {}",
+            start,
+            end,
+            length,
+            blob_id
+        );
 
-        let bytes = self.with_retry(|| {
-            let client = self.inner.client.clone();
-            let url = url.clone();
-            async move {
-                let response = client.get(&url)
-                    .header("Range", format!("bytes={}-{}", start, end))
-                    .send()
-                    .await?;
+        let bytes = self
+            .with_retry(|| {
+                let client = self.inner.client.clone();
+                let url = url.clone();
+                async move {
+                    let response = client
+                        .get(&url)
+                        .header("Range", format!("bytes={}-{}", start, end))
+                        .send()
+                        .await?;
 
-                if !response.status().is_success() {
-                    return Err(anyhow::anyhow!("status {}", response.status()));
+                    if !response.status().is_success() {
+                        return Err(anyhow::anyhow!("status {}", response.status()));
+                    }
+
+                    Ok(response.bytes().await?.to_vec())
                 }
-
-                Ok(response.bytes().await?.to_vec())
-            }
-        }).await?;
+            })
+            .await?;
 
         if bytes.len() as u64 != length {
             tracing::warn!("expected {} bytes, got {}", length, bytes.len());
         }
 
-        self.inner.bytes_downloaded.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        self.inner
+            .bytes_downloaded
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
         Ok(bytes)
     }
 }
@@ -1324,9 +1435,33 @@ mod tests {
     #[test]
     fn coalesce_entries_merges_adjacent() {
         let entries = vec![
-            (1u64, BlobIndexEntry { checkpoint_number: 1, offset: 0, length: 100 }, ()),
-            (2u64, BlobIndexEntry { checkpoint_number: 2, offset: 100, length: 50 }, ()),
-            (3u64, BlobIndexEntry { checkpoint_number: 3, offset: 200, length: 25 }, ()),
+            (
+                1u64,
+                BlobIndexEntry {
+                    checkpoint_number: 1,
+                    offset: 0,
+                    length: 100,
+                },
+                (),
+            ),
+            (
+                2u64,
+                BlobIndexEntry {
+                    checkpoint_number: 2,
+                    offset: 100,
+                    length: 50,
+                },
+                (),
+            ),
+            (
+                3u64,
+                BlobIndexEntry {
+                    checkpoint_number: 3,
+                    offset: 200,
+                    length: 25,
+                },
+                (),
+            ),
         ];
 
         let ranges = coalesce_entries(&entries, 0, 1024);
@@ -1341,9 +1476,33 @@ mod tests {
     #[test]
     fn coalesce_entries_respects_max_range() {
         let entries = vec![
-            (1u64, BlobIndexEntry { checkpoint_number: 1, offset: 0, length: 100 }, ()),
-            (2u64, BlobIndexEntry { checkpoint_number: 2, offset: 100, length: 100 }, ()),
-            (3u64, BlobIndexEntry { checkpoint_number: 3, offset: 200, length: 100 }, ()),
+            (
+                1u64,
+                BlobIndexEntry {
+                    checkpoint_number: 1,
+                    offset: 0,
+                    length: 100,
+                },
+                (),
+            ),
+            (
+                2u64,
+                BlobIndexEntry {
+                    checkpoint_number: 2,
+                    offset: 100,
+                    length: 100,
+                },
+                (),
+            ),
+            (
+                3u64,
+                BlobIndexEntry {
+                    checkpoint_number: 3,
+                    offset: 200,
+                    length: 100,
+                },
+                (),
+            ),
         ];
 
         let ranges = coalesce_entries(&entries, 0, 150);

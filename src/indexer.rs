@@ -101,12 +101,20 @@ pub trait Processor: Send + Sync {
     ///
     /// Called after `process()` for each checkpoint. The checkpoint number is
     /// provided for watermark tracking.
-    async fn commit(&mut self, checkpoint_num: CheckpointSequenceNumber, data: Self::Output) -> Result<()>;
+    async fn commit(
+        &mut self,
+        checkpoint_num: CheckpointSequenceNumber,
+        data: Self::Output,
+    ) -> Result<()>;
 
     /// Called before processing begins.
     ///
     /// Override to perform setup (open connections, create tables, etc.).
-    async fn on_start(&mut self, _start: CheckpointSequenceNumber, _end: CheckpointSequenceNumber) -> Result<()> {
+    async fn on_start(
+        &mut self,
+        _start: CheckpointSequenceNumber,
+        _end: CheckpointSequenceNumber,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -316,7 +324,10 @@ impl<P: Processor> MassIndexer<P> {
     ///
     /// If a watermark exists and is within the range, indexing will resume
     /// from the watermark + 1.
-    pub async fn run(&mut self, range: std::ops::Range<CheckpointSequenceNumber>) -> Result<IndexerStats> {
+    pub async fn run(
+        &mut self,
+        range: std::ops::Range<CheckpointSequenceNumber>,
+    ) -> Result<IndexerStats> {
         let mut stats = IndexerStats {
             checkpoints_total: range.end.saturating_sub(range.start),
             ..Default::default()
@@ -347,14 +358,19 @@ impl<P: Processor> MassIndexer<P> {
         );
 
         // Notify processor
-        self.processor.on_start(effective_range.start, effective_range.end).await?;
+        self.processor
+            .on_start(effective_range.start, effective_range.end)
+            .await?;
 
         let start_time = Instant::now();
         let log_interval = self.config.log_interval;
         let watermark_interval = self.config.watermark_interval;
 
         // Fetch all checkpoints (using get_checkpoints for simpler ownership)
-        let checkpoints = self.storage.get_checkpoints(effective_range.clone()).await
+        let checkpoints = self
+            .storage
+            .get_checkpoints(effective_range.clone())
+            .await
             .context("failed to fetch checkpoints from storage")?;
 
         // Process each checkpoint
@@ -362,11 +378,16 @@ impl<P: Processor> MassIndexer<P> {
             let checkpoint_num = checkpoint.checkpoint_summary.sequence_number;
 
             // Process checkpoint
-            let output = self.processor.process(&checkpoint).await
+            let output = self
+                .processor
+                .process(&checkpoint)
+                .await
                 .with_context(|| format!("failed to process checkpoint {}", checkpoint_num))?;
 
             // Commit output
-            self.processor.commit(checkpoint_num, output).await
+            self.processor
+                .commit(checkpoint_num, output)
+                .await
                 .with_context(|| format!("failed to commit checkpoint {}", checkpoint_num))?;
 
             stats.checkpoints_processed += 1;
@@ -381,7 +402,8 @@ impl<P: Processor> MassIndexer<P> {
             if stats.checkpoints_processed % log_interval == 0 {
                 let elapsed = start_time.elapsed().as_secs_f64();
                 let rate = stats.checkpoints_processed as f64 / elapsed;
-                let progress = (stats.checkpoints_processed as f64 / total_checkpoints as f64) * 100.0;
+                let progress =
+                    (stats.checkpoints_processed as f64 / total_checkpoints as f64) * 100.0;
                 tracing::info!(
                     "progress: {} / {} ({:.1}%), {:.1} cp/s, checkpoint {}",
                     stats.checkpoints_processed,
@@ -403,7 +425,9 @@ impl<P: Processor> MassIndexer<P> {
         }
 
         // Notify processor
-        self.processor.on_complete(stats.checkpoints_processed).await?;
+        self.processor
+            .on_complete(stats.checkpoints_processed)
+            .await?;
 
         tracing::info!(
             "mass indexer complete: {} checkpoints in {:.2}s ({:.1} cp/s)",
@@ -417,7 +441,10 @@ impl<P: Processor> MassIndexer<P> {
 
     /// Run the indexer for all available checkpoints.
     pub async fn run_all(&mut self) -> Result<IndexerStats> {
-        let coverage = self.storage.coverage_range().await
+        let coverage = self
+            .storage
+            .coverage_range()
+            .await
             .ok_or_else(|| anyhow::anyhow!("no checkpoint coverage available"))?;
 
         self.run(coverage.0..coverage.1 + 1).await
@@ -468,10 +495,17 @@ impl Processor for CountingProcessor {
             .map(|events| events.data.len() as u64)
             .sum();
 
-        Ok(CountingOutput { transactions, events })
+        Ok(CountingOutput {
+            transactions,
+            events,
+        })
     }
 
-    async fn commit(&mut self, _checkpoint_num: CheckpointSequenceNumber, data: Self::Output) -> Result<()> {
+    async fn commit(
+        &mut self,
+        _checkpoint_num: CheckpointSequenceNumber,
+        data: Self::Output,
+    ) -> Result<()> {
         self.checkpoints_seen += 1;
         self.total_transactions += data.transactions;
         self.total_events += data.events;

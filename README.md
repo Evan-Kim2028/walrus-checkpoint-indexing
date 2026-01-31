@@ -11,7 +11,7 @@ Index Sui checkpoints from Walrus decentralized storage with high performance.
 This library provides efficient streaming of Sui checkpoint data stored on Walrus. It supports multiple fetch strategies:
 
 - **Full blob download**: Download entire blobs (2-3 GB each) for maximum throughput
-- **Byte-range streaming**: Stream specific byte ranges using the forked Walrus CLI
+- **Byte-range streaming** *(Experimental - Forked CLI)*: Stream specific byte ranges using the forked Walrus CLI
 - **Adaptive fetching**: Automatically choose strategy based on network health
 
 ## CLI Compatibility
@@ -23,9 +23,9 @@ This library works with **two versions** of the Walrus CLI:
 | Full blob download | ✅ Yes | ✅ Yes |
 | Node health tracking | ✅ Yes | ✅ Yes |
 | Sliver prediction | ✅ Yes | ✅ Yes |
-| **Byte-range streaming** | ❌ No | ✅ Yes |
-| **Size-only queries** | ❌ No | ✅ Yes |
-| **Zero-copy streaming** | ❌ No | ✅ Yes |
+| **Byte-range streaming** | ❌ No | ⚠️ Experimental |
+| **Size-only queries** | ❌ No | ⚠️ Experimental |
+| **Zero-copy streaming** | ❌ No | ⚠️ Experimental |
 
 ### Official Walrus CLI
 
@@ -34,13 +34,15 @@ The standard [MystenLabs/walrus](https://github.com/MystenLabs/walrus) binary. U
 - Full blob downloads (more reliable when network has down nodes)
 - Production environments (no custom fork needed)
 
-### Forked Walrus CLI (walrus-cli-streaming)
+### Forked Walrus CLI (walrus-cli-streaming) - Experimental
 
-The [walrus-cli-streaming](https://github.com/Evan-Kim2028/walrus-cli-streaming) fork adds:
-- `--start-byte <N>` - Starting byte position
-- `--byte-length <N>` - Number of bytes to read
-- `--size-only` - Get blob size without downloading
-- `--stream` - Zero-copy streaming to stdout
+> ⚠️ **Experimental**: The forked CLI features are experimental and may change or be deprecated. Use the official CLI for production workloads.
+
+The [walrus-cli-streaming](https://github.com/Evan-Kim2028/walrus-cli-streaming) fork adds experimental features:
+- `--start-byte <N>` - Starting byte position *(Experimental)*
+- `--byte-length <N>` - Number of bytes to read *(Experimental)*
+- `--size-only` - Get blob size without downloading *(Experimental)*
+- `--stream` - Zero-copy streaming to stdout *(Experimental)*
 
 Use this for:
 - Random access to specific checkpoints
@@ -49,7 +51,7 @@ Use this for:
 
 ## Features
 
-- **High Performance**: 10-18 checkpoints/sec on healthy networks (8x faster than Sui bucket)
+- **High Performance**: 10-18 checkpoints/sec on healthy networks
 - **Node Health Tracking**: Monitor Walrus storage node health for diagnostics
 - **Sliver Prediction**: Understand which byte ranges may be slow due to down nodes
 - **Resumable Downloads**: State tracking for reliable backfills
@@ -98,18 +100,20 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-### Byte-Range Streaming (Forked CLI)
+### Byte-Range Streaming (Forked CLI) - Experimental
+
+> ⚠️ **Experimental - Forked CLI Feature**: This functionality requires the [walrus-cli-streaming](https://github.com/Evan-Kim2028/walrus-cli-streaming) fork and is experimental. The API and behavior may change.
 
 ```rust
 use walrus_checkpoint_indexing::{Config, WalrusStorage, CliCapabilities, FetchStrategy};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Using forked CLI with byte-range streaming
+    // Using forked CLI with byte-range streaming (EXPERIMENTAL)
     let config = Config::builder()
         .walrus_cli_path("/path/to/walrus-fork")
-        .cli_capabilities(CliCapabilities::Forked)  // REQUIRED for byte-range
-        .fetch_strategy(FetchStrategy::ByteRangeStream)
+        .cli_capabilities(CliCapabilities::Forked)  // REQUIRED for byte-range (experimental)
+        .fetch_strategy(FetchStrategy::ByteRangeStream)  // Experimental
         .build()?;
 
     let storage = WalrusStorage::new(config).await?;
@@ -338,7 +342,7 @@ Notes:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `WALRUS_CLI_CAPABILITIES` | CLI type: "official" or "forked" | `official` |
+| `WALRUS_CLI_CAPABILITIES` | CLI type: "official" or "forked" *(forked is experimental)* | `official` |
 | `WALRUS_ARCHIVAL_URL` | Archival service URL | `https://walrus-sui-archival.mainnet.walrus.space` |
 | `WALRUS_AGGREGATOR_URL` | Aggregator URL | `https://aggregator.walrus-mainnet.walrus.space` |
 
@@ -350,15 +354,15 @@ Notes:
 | `--aggregator-url` | Aggregator URL | env or default |
 | `--walrus-cli-path` | Path to Walrus CLI binary | none (uses HTTP) |
 | `--walrus-cli-context` | Walrus CLI context | `mainnet` |
-| `--cli-capabilities` | CLI type: "official" or "forked" | `official` |
-| `--fetch-strategy` | Strategy: "full-blob", "byte-range", "adaptive" | `full-blob` |
+| `--cli-capabilities` | CLI type: "official" or "forked" *(forked is experimental)* | `official` |
+| `--fetch-strategy` | Strategy: "full-blob", "byte-range" *(experimental)*, "adaptive" | `full-blob` |
 | `--cli-timeout-secs` | CLI command timeout | 180 |
 | `--range-concurrency` | Concurrent range requests | 32 |
 | `--blob-concurrency` | Concurrent blob processing | 4 |
 | `--cache-enabled` | Enable local blob cache | false |
 | `--cache-dir` | Cache directory | `.walrus-cache` |
 
-**Note**: Using `--fetch-strategy=byte-range` requires `--cli-capabilities=forked`.
+**Note**: Using `--fetch-strategy=byte-range` requires `--cli-capabilities=forked`. Both are experimental features from the forked Walrus CLI.
 
 ## Architecture
 
@@ -409,16 +413,18 @@ Risk levels:
 - **High**: 3-5 problematic shards, high timeout chance
 - **Critical**: 6+ problematic shards, likely to fail
 
-## Forked Walrus CLI
+## Forked Walrus CLI - Experimental Features
 
-For byte-range streaming, this library uses a forked Walrus CLI with additional features:
+> ⚠️ **Experimental**: All features from the forked Walrus CLI are experimental and may change or be deprecated without notice. For production use, prefer the official CLI with full blob download mode.
 
-- `--start-byte <N>`: Starting byte position
-- `--byte-length <N>`: Number of bytes to read
-- `--size-only`: Get blob size without downloading
-- `--stream`: Zero-copy streaming to stdout
+For byte-range streaming, this library uses a forked Walrus CLI with additional experimental features:
 
-See: [walrus-cli-streaming](https://github.com/Evan-Kim2028/walrus-cli-streaming)
+- `--start-byte <N>`: Starting byte position *(Experimental - Forked CLI)*
+- `--byte-length <N>`: Number of bytes to read *(Experimental - Forked CLI)*
+- `--size-only`: Get blob size without downloading *(Experimental - Forked CLI)*
+- `--stream`: Zero-copy streaming to stdout *(Experimental - Forked CLI)*
+
+See: [walrus-cli-streaming](https://github.com/Evan-Kim2028/walrus-cli-streaming) (Forked CLI)
 
 ## Performance
 
@@ -472,4 +478,4 @@ Apache-2.0
 ## Related Projects
 
 - [deepbookv3-walrus-streaming](https://github.com/Evan-Kim2028/deepbookv3-walrus-streaming) - DeepBook indexer using this library
-- [walrus-cli-streaming](https://github.com/Evan-Kim2028/walrus-cli-streaming) - Forked Walrus CLI with byte-range support
+- [walrus-cli-streaming](https://github.com/Evan-Kim2028/walrus-cli-streaming) - Forked Walrus CLI with byte-range support *(Experimental)*

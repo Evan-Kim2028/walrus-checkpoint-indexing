@@ -170,9 +170,15 @@ impl NodeHealthTracker {
         let mut shard_to_node = HashMap::new();
         let mut node_shards: HashMap<String, Vec<u32>> = HashMap::new();
 
-        if let Some(nodes) = committee_json.get("currentStorageNodes").and_then(|v| v.as_array()) {
+        if let Some(nodes) = committee_json
+            .get("currentStorageNodes")
+            .and_then(|v| v.as_array())
+        {
             for node in nodes {
-                let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let name = node
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 if let Some(shard_ids) = node.get("shardIds").and_then(|v| v.as_array()) {
                     let shards: Vec<u32> = shard_ids
                         .iter()
@@ -193,7 +199,10 @@ impl NodeHealthTracker {
 
         if let Some(health_info) = health_json.get("healthInfo").and_then(|v| v.as_array()) {
             for info in health_info {
-                let name = info.get("nodeName").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let name = info
+                    .get("nodeName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 let network_address = info
                     .get("nodeUrl")
                     .and_then(|v| v.as_str())
@@ -281,7 +290,10 @@ impl NodeHealthTracker {
 
         let summary = NetworkHealthSummary {
             total_nodes: nodes.len(),
-            healthy_nodes: nodes.values().filter(|n| n.status == NodeStatus::Healthy).count(),
+            healthy_nodes: nodes
+                .values()
+                .filter(|n| n.status == NodeStatus::Healthy)
+                .count(),
             degraded_nodes: degraded_names.len(),
             down_nodes: down_names.len(),
             total_shards: shard_to_node.len(),
@@ -334,7 +346,10 @@ impl NodeHealthTracker {
 
         NetworkHealthSummary {
             total_nodes: nodes.len(),
-            healthy_nodes: nodes.values().filter(|n| n.status == NodeStatus::Healthy).count(),
+            healthy_nodes: nodes
+                .values()
+                .filter(|n| n.status == NodeStatus::Healthy)
+                .count(),
             degraded_nodes: degraded_names.len(),
             down_nodes: down_names.len(),
             total_shards: shard_to_node.len(),
@@ -392,7 +407,9 @@ impl NodeHealthTracker {
         cmd.kill_on_drop(true);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let child = cmd.spawn().context("failed to spawn walrus health command")?;
+        let child = cmd
+            .spawn()
+            .context("failed to spawn walrus health command")?;
         let timeout = Duration::from_secs(self.inner.cli_timeout_secs);
 
         match tokio::time::timeout(timeout, child.wait_with_output()).await {
@@ -400,7 +417,10 @@ impl NodeHealthTracker {
                 let output = res.context("failed to wait on walrus health command")?;
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(anyhow::anyhow!("walrus health command failed: {}", stderr.trim()));
+                    return Err(anyhow::anyhow!(
+                        "walrus health command failed: {}",
+                        stderr.trim()
+                    ));
                 }
                 Ok(String::from_utf8_lossy(&output.stdout).to_string())
             }
@@ -423,7 +443,9 @@ impl NodeHealthTracker {
         cmd.kill_on_drop(true);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let child = cmd.spawn().context("failed to spawn walrus info committee command")?;
+        let child = cmd
+            .spawn()
+            .context("failed to spawn walrus info committee command")?;
         let timeout = Duration::from_secs(self.inner.cli_timeout_secs);
 
         match tokio::time::timeout(timeout, child.wait_with_output()).await {

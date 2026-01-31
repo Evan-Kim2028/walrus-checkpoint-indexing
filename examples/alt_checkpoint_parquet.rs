@@ -19,25 +19,30 @@ use clap::{Parser, ValueEnum};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
+use scoped_futures::ScopedBoxFuture;
+use serde_json::json;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use scoped_futures::ScopedBoxFuture;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use serde_json::json;
 
-use sui_indexer_alt_framework as framework;
 use framework::ingestion::{ClientArgs, IngestionConfig};
-use framework::pipeline::Processor;
 use framework::pipeline::sequential::{Handler, SequentialConfig};
-use framework::store::{CommitterWatermark, Connection, PrunerWatermark, ReaderWatermark, Store, TransactionalStore};
-use framework::{Indexer, IndexerArgs};
+use framework::pipeline::Processor;
+use framework::store::{
+    CommitterWatermark, Connection, PrunerWatermark, ReaderWatermark, Store, TransactionalStore,
+};
 use framework::types::base_types::ObjectID;
 use framework::types::full_checkpoint_content::{Checkpoint, CheckpointData};
+use framework::{Indexer, IndexerArgs};
+use sui_indexer_alt_framework as framework;
 use sui_storage::blob::{Blob, BlobEncoding};
 use walrus_checkpoint_indexing::{Config, WalrusStorage};
 
@@ -104,16 +109,29 @@ impl SpoolHandle {
                 let path = dir.unwrap_or_else(|| PathBuf::from("./checkpoint-spool"));
                 std::fs::create_dir_all(&path)
                     .with_context(|| format!("failed to create spool dir: {}", path.display()))?;
-                Ok(Self { dir: path, _temp: None, cache_mode: true })
+                Ok(Self {
+                    dir: path,
+                    _temp: None,
+                    cache_mode: true,
+                })
             }
             SpoolMode::Ephemeral => {
                 if let Some(path) = dir {
-                    std::fs::create_dir_all(&path)
-                        .with_context(|| format!("failed to create spool dir: {}", path.display()))?;
-                    Ok(Self { dir: path, _temp: None, cache_mode: false })
+                    std::fs::create_dir_all(&path).with_context(|| {
+                        format!("failed to create spool dir: {}", path.display())
+                    })?;
+                    Ok(Self {
+                        dir: path,
+                        _temp: None,
+                        cache_mode: false,
+                    })
                 } else {
                     let temp = TempDir::new().context("failed to create temp spool dir")?;
-                    Ok(Self { dir: temp.path().to_path_buf(), _temp: Some(temp), cache_mode: false })
+                    Ok(Self {
+                        dir: temp.path().to_path_buf(),
+                        _temp: Some(temp),
+                        cache_mode: false,
+                    })
                 }
             }
         }
@@ -168,8 +186,12 @@ impl ParquetSink {
             return Ok(());
         }
 
-        let file = File::create(&self.output_path)
-            .with_context(|| format!("failed to create output file: {}", self.output_path.display()))?;
+        let file = File::create(&self.output_path).with_context(|| {
+            format!(
+                "failed to create output file: {}",
+                self.output_path.display()
+            )
+        })?;
 
         let props = WriterProperties::builder()
             .set_compression(Compression::SNAPPY)
@@ -368,10 +390,12 @@ impl LocalStore {
     fn new(path: Option<PathBuf>) -> Result<Self> {
         let state = if let Some(path) = &path {
             if path.exists() {
-                let data = std::fs::read_to_string(path)
-                    .with_context(|| format!("failed to read watermark file: {}", path.display()))?;
-                serde_json::from_str::<WatermarkState>(&data)
-                    .with_context(|| format!("failed to parse watermark file: {}", path.display()))?
+                let data = std::fs::read_to_string(path).with_context(|| {
+                    format!("failed to read watermark file: {}", path.display())
+                })?;
+                serde_json::from_str::<WatermarkState>(&data).with_context(|| {
+                    format!("failed to parse watermark file: {}", path.display())
+                })?
             } else {
                 WatermarkState::default()
             }
@@ -431,7 +455,10 @@ impl Connection for LocalConnection {
         pipeline_task: &str,
     ) -> anyhow::Result<Option<CommitterWatermark>> {
         let state = self.state.lock().await;
-        Ok(state.entries.get(pipeline_task).map(|entry| entry.committer()))
+        Ok(state
+            .entries
+            .get(pipeline_task)
+            .map(|entry| entry.committer()))
     }
 
     async fn reader_watermark(
@@ -471,15 +498,18 @@ impl Connection for LocalConnection {
         watermark: CommitterWatermark,
     ) -> anyhow::Result<bool> {
         let mut state = self.state.lock().await;
-        let entry = state.entries.entry(pipeline_task.to_string()).or_insert_with(|| WatermarkEntry {
-            epoch_hi_inclusive: 0,
-            checkpoint_hi_inclusive: 0,
-            tx_hi: 0,
-            timestamp_ms_hi_inclusive: 0,
-            reader_lo: 0,
-            pruner_hi: 0,
-            pruner_timestamp_ms: now_ms(),
-        });
+        let entry = state
+            .entries
+            .entry(pipeline_task.to_string())
+            .or_insert_with(|| WatermarkEntry {
+                epoch_hi_inclusive: 0,
+                checkpoint_hi_inclusive: 0,
+                tx_hi: 0,
+                timestamp_ms_hi_inclusive: 0,
+                reader_lo: 0,
+                pruner_hi: 0,
+                pruner_timestamp_ms: now_ms(),
+            });
 
         if watermark.checkpoint_hi_inclusive <= entry.checkpoint_hi_inclusive {
             return Ok(false);
@@ -500,15 +530,18 @@ impl Connection for LocalConnection {
         reader_lo: u64,
     ) -> anyhow::Result<bool> {
         let mut state = self.state.lock().await;
-        let entry = state.entries.entry(pipeline.to_string()).or_insert_with(|| WatermarkEntry {
-            epoch_hi_inclusive: 0,
-            checkpoint_hi_inclusive: 0,
-            tx_hi: 0,
-            timestamp_ms_hi_inclusive: 0,
-            reader_lo: 0,
-            pruner_hi: 0,
-            pruner_timestamp_ms: now_ms(),
-        });
+        let entry = state
+            .entries
+            .entry(pipeline.to_string())
+            .or_insert_with(|| WatermarkEntry {
+                epoch_hi_inclusive: 0,
+                checkpoint_hi_inclusive: 0,
+                tx_hi: 0,
+                timestamp_ms_hi_inclusive: 0,
+                reader_lo: 0,
+                pruner_hi: 0,
+                pruner_timestamp_ms: now_ms(),
+            });
 
         if reader_lo <= entry.reader_lo {
             return Ok(false);
@@ -527,15 +560,18 @@ impl Connection for LocalConnection {
         pruner_hi: u64,
     ) -> anyhow::Result<bool> {
         let mut state = self.state.lock().await;
-        let entry = state.entries.entry(pipeline.to_string()).or_insert_with(|| WatermarkEntry {
-            epoch_hi_inclusive: 0,
-            checkpoint_hi_inclusive: 0,
-            tx_hi: 0,
-            timestamp_ms_hi_inclusive: 0,
-            reader_lo: 0,
-            pruner_hi: 0,
-            pruner_timestamp_ms: now_ms(),
-        });
+        let entry = state
+            .entries
+            .entry(pipeline.to_string())
+            .or_insert_with(|| WatermarkEntry {
+                epoch_hi_inclusive: 0,
+                checkpoint_hi_inclusive: 0,
+                tx_hi: 0,
+                timestamp_ms_hi_inclusive: 0,
+                reader_lo: 0,
+                pruner_hi: 0,
+                pruner_timestamp_ms: now_ms(),
+            });
 
         if pruner_hi <= entry.pruner_hi {
             return Ok(false);
@@ -554,18 +590,27 @@ async fn persist_state(path: &Option<PathBuf>, state: &WatermarkState) -> Result
 
     let tmp_path = path.with_extension("tmp");
     let data = serde_json::to_string_pretty(state)?;
-    tokio::fs::write(&tmp_path, data)
-        .await
-        .with_context(|| format!("failed to write watermark temp file: {}", tmp_path.display()))?;
-    tokio::fs::rename(&tmp_path, path)
-        .await
-        .with_context(|| format!("failed to move watermark file into place: {}", path.display()))?;
+    tokio::fs::write(&tmp_path, data).await.with_context(|| {
+        format!(
+            "failed to write watermark temp file: {}",
+            tmp_path.display()
+        )
+    })?;
+    tokio::fs::rename(&tmp_path, path).await.with_context(|| {
+        format!(
+            "failed to move watermark file into place: {}",
+            path.display()
+        )
+    })?;
     Ok(())
 }
 
 #[async_trait::async_trait]
 impl Store for LocalStore {
-    type Connection<'c> = LocalConnection where Self: 'c;
+    type Connection<'c>
+        = LocalConnection
+    where
+        Self: 'c;
 
     async fn connect<'c>(&'c self) -> anyhow::Result<Self::Connection<'c>> {
         Ok(LocalConnection {
@@ -581,7 +626,9 @@ impl TransactionalStore for LocalStore {
     where
         R: Send + 'a,
         F: Send + 'a,
-        F: for<'r> FnOnce(&'r mut Self::Connection<'_>) -> ScopedBoxFuture<'a, 'r, anyhow::Result<R>>,
+        F: for<'r> FnOnce(
+            &'r mut Self::Connection<'_>,
+        ) -> ScopedBoxFuture<'a, 'r, anyhow::Result<R>>,
     {
         let mut conn = self.connect().await?;
         f(&mut conn).await
@@ -638,9 +685,9 @@ async fn spool_checkpoints(
                 }
 
                 let bytes = checkpoint_to_chk_bytes(checkpoint)?;
-                tokio::fs::write(&path, bytes)
-                    .await
-                    .with_context(|| format!("failed to write checkpoint file: {}", path.display()))?;
+                tokio::fs::write(&path, bytes).await.with_context(|| {
+                    format!("failed to write checkpoint file: {}", path.display())
+                })?;
 
                 written.fetch_add(1, Ordering::Relaxed);
                 Ok(())
@@ -750,8 +797,7 @@ async fn main() -> Result<()> {
 
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -765,8 +811,9 @@ async fn main() -> Result<()> {
     if args.reset_watermark {
         if let Some(path) = &args.watermark_file {
             if path.exists() {
-                std::fs::remove_file(path)
-                    .with_context(|| format!("failed to remove watermark file: {}", path.display()))?;
+                std::fs::remove_file(path).with_context(|| {
+                    format!("failed to remove watermark file: {}", path.display())
+                })?;
             }
         }
     }

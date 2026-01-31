@@ -40,9 +40,7 @@
 //! ```
 
 use anyhow::{Context, Result};
-use arrow::array::{
-    ArrayRef, BinaryBuilder, StringBuilder, UInt32Builder, UInt64Builder,
-};
+use arrow::array::{ArrayRef, BinaryBuilder, StringBuilder, UInt32Builder, UInt64Builder};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
@@ -204,14 +202,21 @@ impl ParquetProcessor {
         // Build Arrow arrays
         let mut checkpoint_num_builder = UInt64Builder::with_capacity(self.buffer.len());
         let mut timestamp_ms_builder = UInt64Builder::with_capacity(self.buffer.len());
-        let mut tx_digest_builder = StringBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 44);
+        let mut tx_digest_builder =
+            StringBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 44);
         let mut event_index_builder = UInt32Builder::with_capacity(self.buffer.len());
-        let mut package_id_builder = StringBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 66);
-        let mut module_builder = StringBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 32);
-        let mut event_type_builder = StringBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 64);
-        let mut sender_builder = StringBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 66);
-        let mut event_json_builder = StringBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 256);
-        let mut bcs_data_builder = BinaryBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 256);
+        let mut package_id_builder =
+            StringBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 66);
+        let mut module_builder =
+            StringBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 32);
+        let mut event_type_builder =
+            StringBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 64);
+        let mut sender_builder =
+            StringBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 66);
+        let mut event_json_builder =
+            StringBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 256);
+        let mut bcs_data_builder =
+            BinaryBuilder::with_capacity(self.buffer.len(), self.buffer.len() * 256);
 
         for event in &self.buffer {
             checkpoint_num_builder.append_value(event.checkpoint_num);
@@ -247,8 +252,11 @@ impl ParquetProcessor {
         writer.close()?;
 
         let write_elapsed = write_start.elapsed().as_secs_f64();
-        println!("  Parquet write time: {:.2}s ({:.0} events/sec)",
-                 write_elapsed, total as f64 / write_elapsed);
+        println!(
+            "  Parquet write time: {:.2}s ({:.0} events/sec)",
+            write_elapsed,
+            total as f64 / write_elapsed
+        );
 
         Ok(total)
     }
@@ -311,13 +319,21 @@ impl Processor for ParquetProcessor {
         Ok(events)
     }
 
-    async fn commit(&mut self, _checkpoint_num: CheckpointSequenceNumber, data: Self::Output) -> Result<()> {
+    async fn commit(
+        &mut self,
+        _checkpoint_num: CheckpointSequenceNumber,
+        data: Self::Output,
+    ) -> Result<()> {
         self.buffer.extend(data);
         self.total_checkpoints += 1;
         Ok(())
     }
 
-    async fn on_start(&mut self, start: CheckpointSequenceNumber, end: CheckpointSequenceNumber) -> Result<()> {
+    async fn on_start(
+        &mut self,
+        start: CheckpointSequenceNumber,
+        end: CheckpointSequenceNumber,
+    ) -> Result<()> {
         println!("Processing checkpoints {} to {}", start, end);
         if let Some(pkg) = &self.package_filter {
             println!("Filtering by package: {}", pkg);
@@ -356,15 +372,22 @@ async fn main() -> Result<()> {
     let cache_enabled = !args.no_cache;
 
     println!("Configuration:");
-    println!("  Checkpoint range: {} to {} ({} checkpoints)",
-             range.start, range.end, range.end - range.start);
+    println!(
+        "  Checkpoint range: {} to {} ({} checkpoints)",
+        range.start,
+        range.end,
+        range.end - range.start
+    );
     println!("  Output file: {:?}", args.output);
     if let Some(pkg) = &package_filter {
         println!("  Package filter: {}", pkg);
     } else {
         println!("  Package filter: none (all events)");
     }
-    println!("  Cache enabled: {} (dir: {:?})", cache_enabled, args.cache_dir);
+    println!(
+        "  Cache enabled: {} (dir: {:?})",
+        cache_enabled, args.cache_dir
+    );
     if args.walrus_cli_path.is_some() {
         println!("  Walrus CLI: enabled (faster downloads)");
     }
@@ -377,7 +400,11 @@ async fn main() -> Result<()> {
 
     if blob_cached {
         let size = std::fs::metadata(&cached_blob_path)?.len();
-        println!("Blob already cached: {:?} ({:.2} GB)", cached_blob_path, size as f64 / 1_000_000_000.0);
+        println!(
+            "Blob already cached: {:?} ({:.2} GB)",
+            cached_blob_path,
+            size as f64 / 1_000_000_000.0
+        );
     } else if cache_enabled {
         println!("Blob not cached - will download ~3.2 GB on first run");
         println!("  (subsequent runs will be much faster)");
@@ -425,12 +452,17 @@ async fn main() -> Result<()> {
     println!("Timing:");
     println!("  Total time: {:.2}s", total_elapsed);
     println!("  Processing time: {:.2}s", stats.elapsed_secs);
-    println!("  Throughput: {:.0} checkpoints/sec", stats.checkpoints_processed as f64 / stats.elapsed_secs);
+    println!(
+        "  Throughput: {:.0} checkpoints/sec",
+        stats.checkpoints_processed as f64 / stats.elapsed_secs
+    );
 
     if stats.mb_downloaded() > 0.0 {
-        println!("  Data downloaded: {:.2} MB ({:.2} MB/s)",
-                 stats.mb_downloaded(),
-                 stats.mb_downloaded() / stats.elapsed_secs);
+        println!(
+            "  Data downloaded: {:.2} MB ({:.2} MB/s)",
+            stats.mb_downloaded(),
+            stats.mb_downloaded() / stats.elapsed_secs
+        );
     }
     println!();
 

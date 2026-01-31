@@ -65,7 +65,11 @@ async fn main() -> Result<()> {
     storage.initialize().await?;
 
     match cli.command {
-        Commands::Stream { start, end, log_interval } => {
+        Commands::Stream {
+            start,
+            end,
+            log_interval,
+        } => {
             stream_checkpoints(&storage, start, end, log_interval).await?;
         }
         Commands::Get { checkpoint } => {

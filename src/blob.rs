@@ -86,8 +86,7 @@ impl BlobFooter {
 
         let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
         let index_start_offset = u64::from_le_bytes([
-            bytes[8], bytes[9], bytes[10], bytes[11],
-            bytes[12], bytes[13], bytes[14], bytes[15],
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
         ]);
         let entry_count = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
 

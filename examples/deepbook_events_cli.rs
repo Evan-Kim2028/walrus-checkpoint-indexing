@@ -205,7 +205,12 @@ fn download_blob_via_cli(
     let mb = size as f64 / 1_000_000.0;
     let mbps = mb / elapsed.as_secs_f64();
 
-    println!("  Downloaded {:.2} MB in {:.1}s ({:.2} MB/s)", mb, elapsed.as_secs_f64(), mbps);
+    println!(
+        "  Downloaded {:.2} MB in {:.1}s ({:.2} MB/s)",
+        mb,
+        elapsed.as_secs_f64(),
+        mbps
+    );
 
     Ok(())
 }
@@ -232,7 +237,11 @@ fn parse_blob_index(blob_path: &PathBuf) -> Result<Vec<BlobIndexEntry>> {
 
     let magic = reader.read_u32::<LittleEndian>()?;
     if magic != BLOB_FOOTER_MAGIC {
-        anyhow::bail!("Invalid blob footer magic: expected {:#x}, got {:#x}", BLOB_FOOTER_MAGIC, magic);
+        anyhow::bail!(
+            "Invalid blob footer magic: expected {:#x}, got {:#x}",
+            BLOB_FOOTER_MAGIC,
+            magic
+        );
     }
 
     let _version = reader.read_u32::<LittleEndian>()?;
@@ -254,9 +263,9 @@ fn parse_blob_index(blob_path: &PathBuf) -> Result<Vec<BlobIndexEntry>> {
         let name_len = cursor.read_u32::<LittleEndian>()?;
         let mut name_bytes = vec![0u8; name_len as usize];
         cursor.read_exact(&mut name_bytes)?;
-        let name_str = String::from_utf8(name_bytes)
-            .context("Invalid UTF-8 in checkpoint name")?;
-        let checkpoint_number = name_str.parse::<u64>()
+        let name_str = String::from_utf8(name_bytes).context("Invalid UTF-8 in checkpoint name")?;
+        let checkpoint_number = name_str
+            .parse::<u64>()
             .context("Failed to parse checkpoint number")?;
         let offset = cursor.read_u64::<LittleEndian>()?;
         let length = cursor.read_u64::<LittleEndian>()?;
@@ -276,7 +285,10 @@ fn parse_blob_index(blob_path: &PathBuf) -> Result<Vec<BlobIndexEntry>> {
 ///
 /// Uses sui_storage::blob::Blob to handle the blob format which includes
 /// a header before the BCS-encoded checkpoint data.
-fn read_checkpoint_from_blob(blob_path: &PathBuf, entry: &BlobIndexEntry) -> Result<CheckpointData> {
+fn read_checkpoint_from_blob(
+    blob_path: &PathBuf,
+    entry: &BlobIndexEntry,
+) -> Result<CheckpointData> {
     let mut file = std::fs::File::open(blob_path)?;
     file.seek(SeekFrom::Start(entry.offset))?;
 
@@ -284,8 +296,8 @@ fn read_checkpoint_from_blob(blob_path: &PathBuf, entry: &BlobIndexEntry) -> Res
     file.read_exact(&mut buffer)?;
 
     // Use sui_storage::blob::Blob which handles the blob format
-    let checkpoint = Blob::from_bytes::<CheckpointData>(&buffer)
-        .context("Failed to deserialize checkpoint")?;
+    let checkpoint =
+        Blob::from_bytes::<CheckpointData>(&buffer).context("Failed to deserialize checkpoint")?;
 
     Ok(checkpoint)
 }
@@ -306,9 +318,7 @@ fn extract_package_events(
                 if &event.package_id == package_id {
                     let event_type = format!(
                         "{}::{}::{}",
-                        event.package_id,
-                        event.transaction_module,
-                        event.type_.name
+                        event.package_id, event.transaction_module, event.type_.name
                     );
 
                     events.push(ExtractedEvent {
@@ -340,12 +350,12 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Parse package ID
-    let package_id: ObjectID = args
-        .package
-        .parse()
-        .context("Invalid package ID format")?;
+    let package_id: ObjectID = args.package.parse().context("Invalid package ID format")?;
 
-    let blob_id = args.blob_id.clone().unwrap_or_else(|| SAMPLE_BLOB_ID.to_string());
+    let blob_id = args
+        .blob_id
+        .clone()
+        .unwrap_or_else(|| SAMPLE_BLOB_ID.to_string());
 
     // Determine checkpoint range - default to entire blob
     let start_cp = args.start.unwrap_or(SAMPLE_BLOB_START);
@@ -353,7 +363,7 @@ fn main() -> Result<()> {
         // If max_checkpoints specified, use it; otherwise use entire blob
         match args.max_checkpoints {
             Some(max) => (start_cp + max).min(SAMPLE_BLOB_END + 1),
-            None => SAMPLE_BLOB_END + 1,  // Process entire blob
+            None => SAMPLE_BLOB_END + 1, // Process entire blob
         }
     });
 
@@ -366,7 +376,12 @@ fn main() -> Result<()> {
     println!("  Context: {}", args.context);
     println!("  Package filter: {}", args.package);
     println!("  Blob ID: {}", blob_id);
-    println!("  Checkpoint range: {} to {} ({} checkpoints)", start_cp, end_cp, end_cp - start_cp);
+    println!(
+        "  Checkpoint range: {} to {} ({} checkpoints)",
+        start_cp,
+        end_cp,
+        end_cp - start_cp
+    );
     println!("  Cache dir: {:?}", args.cache_dir);
     println!();
 
@@ -396,7 +411,10 @@ fn main() -> Result<()> {
     let index = parse_blob_index(&blob_path)?;
     println!("  Found {} checkpoints in blob index", index.len());
     if let (Some(first), Some(last)) = (index.first(), index.last()) {
-        println!("  Range: {} to {}", first.checkpoint_number, last.checkpoint_number);
+        println!(
+            "  Range: {} to {}",
+            first.checkpoint_number, last.checkpoint_number
+        );
     }
     println!();
 
@@ -432,7 +450,11 @@ fn main() -> Result<()> {
         let matching = extract_package_events(&checkpoint, &package_id);
 
         for event in &matching {
-            let short_type = event.event_type.split("::").last().unwrap_or(&event.event_type);
+            let short_type = event
+                .event_type
+                .split("::")
+                .last()
+                .unwrap_or(&event.event_type);
             *event_type_counts.entry(short_type.to_string()).or_insert(0) += 1;
         }
 
@@ -446,7 +468,10 @@ fn main() -> Result<()> {
             let rate = (i + 1) as f64 / elapsed;
             println!(
                 "  Progress: {}/{} checkpoints ({:.1} cp/s), {} DeepBook events",
-                i + 1, entries_to_process.len(), rate, metrics.matching_events
+                i + 1,
+                entries_to_process.len(),
+                rate,
+                metrics.matching_events
             );
         }
     }
@@ -481,10 +506,16 @@ fn main() -> Result<()> {
     if args.verbose && !all_events.is_empty() {
         println!("Sample Events (first 10):");
         for event in all_events.iter().take(10) {
-            println!("  Checkpoint {}: {} - {}",
-                     event.checkpoint,
-                     event.module,
-                     event.event_type.split("::").last().unwrap_or(&event.event_type));
+            println!(
+                "  Checkpoint {}: {} - {}",
+                event.checkpoint,
+                event.module,
+                event
+                    .event_type
+                    .split("::")
+                    .last()
+                    .unwrap_or(&event.event_type)
+            );
             println!("    TX: {}", event.tx_digest);
         }
         println!();
@@ -493,9 +524,19 @@ fn main() -> Result<()> {
     println!("Performance Metrics:");
     println!("  Checkpoints processed: {}", metrics.checkpoints_processed);
     println!("  Time elapsed: {:.2}s", metrics.elapsed_secs);
-    println!("  Throughput: {:.2} checkpoints/sec", metrics.checkpoints_per_sec());
+    println!(
+        "  Throughput: {:.2} checkpoints/sec",
+        metrics.checkpoints_per_sec()
+    );
     println!("  Blob size: {:.2} MB", metrics.blob_size_mb());
-    println!("  Blob cached: {}", if download_needed { "No (downloaded this run)" } else { "Yes (reused)" });
+    println!(
+        "  Blob cached: {}",
+        if download_needed {
+            "No (downloaded this run)"
+        } else {
+            "Yes (reused)"
+        }
+    );
     println!();
 
     // Demonstrate the simple API pattern

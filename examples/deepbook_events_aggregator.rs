@@ -161,9 +161,7 @@ fn extract_package_events(
                 if &event.package_id == package_id {
                     let event_type = format!(
                         "{}::{}::{}",
-                        event.package_id,
-                        event.transaction_module,
-                        event.type_.name
+                        event.package_id, event.transaction_module, event.type_.name
                     );
 
                     events.push(ExtractedEvent {
@@ -204,10 +202,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Parse package ID
-    let package_id: ObjectID = args
-        .package
-        .parse()
-        .context("Invalid package ID format")?;
+    let package_id: ObjectID = args.package.parse().context("Invalid package ID format")?;
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  DeepBook Event Extractor - HTTP Aggregator Mode");
@@ -215,7 +210,12 @@ async fn main() -> Result<()> {
     println!();
     println!("Configuration:");
     println!("  Package filter: {}", args.package);
-    println!("  Max checkpoints: {}", args.max_checkpoints.map(|n| n.to_string()).unwrap_or_else(|| "all (~12k)".to_string()));
+    println!(
+        "  Max checkpoints: {}",
+        args.max_checkpoints
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "all (~12k)".to_string())
+    );
     println!("  Aggregator URL: {}", args.aggregator_url);
     println!("  Mode: HTTP Aggregator (no CLI)");
     println!();
@@ -230,7 +230,10 @@ async fn main() -> Result<()> {
     storage.initialize().await?;
 
     // Get blob info
-    let blob_id = args.blob_id.clone().unwrap_or_else(|| SAMPLE_BLOB_ID.to_string());
+    let blob_id = args
+        .blob_id
+        .clone()
+        .unwrap_or_else(|| SAMPLE_BLOB_ID.to_string());
 
     // Determine checkpoint range - default to entire blob (same as CLI example)
     let start_cp = args.start.unwrap_or(SAMPLE_BLOB_START);
@@ -238,14 +241,18 @@ async fn main() -> Result<()> {
         // If max_checkpoints specified, use it; otherwise use entire blob
         match args.max_checkpoints {
             Some(max) => (start_cp + max).min(SAMPLE_BLOB_END + 1),
-            None => SAMPLE_BLOB_END + 1,  // Process entire blob (~12k checkpoints)
+            None => SAMPLE_BLOB_END + 1, // Process entire blob (~12k checkpoints)
         }
     });
 
     println!("Processing:");
     println!("  Blob ID: {}", blob_id);
-    println!("  Checkpoint range: {} to {} ({} checkpoints)",
-             start_cp, end_cp, end_cp - start_cp);
+    println!(
+        "  Checkpoint range: {} to {} ({} checkpoints)",
+        start_cp,
+        end_cp,
+        end_cp - start_cp
+    );
     println!();
 
     // Start timing
@@ -272,7 +279,11 @@ async fn main() -> Result<()> {
 
             for event in &matching {
                 // Track event type distribution
-                let short_type = event.event_type.split("::").last().unwrap_or(&event.event_type);
+                let short_type = event
+                    .event_type
+                    .split("::")
+                    .last()
+                    .unwrap_or(&event.event_type);
                 *event_type_counts.entry(short_type.to_string()).or_insert(0) += 1;
             }
 
@@ -326,10 +337,16 @@ async fn main() -> Result<()> {
     if args.verbose && !all_events.is_empty() {
         println!("Sample Events (first 10):");
         for event in all_events.iter().take(10) {
-            println!("  Checkpoint {}: {} - {}",
-                     event.checkpoint,
-                     event.module,
-                     event.event_type.split("::").last().unwrap_or(&event.event_type));
+            println!(
+                "  Checkpoint {}: {} - {}",
+                event.checkpoint,
+                event.module,
+                event
+                    .event_type
+                    .split("::")
+                    .last()
+                    .unwrap_or(&event.event_type)
+            );
             println!("    TX: {}", event.tx_digest);
         }
         println!();
@@ -338,7 +355,10 @@ async fn main() -> Result<()> {
     println!("Performance Metrics:");
     println!("  Checkpoints processed: {}", metrics.checkpoints_processed);
     println!("  Time elapsed: {:.2}s", metrics.elapsed_secs);
-    println!("  Throughput: {:.2} checkpoints/sec", metrics.checkpoints_per_sec());
+    println!(
+        "  Throughput: {:.2} checkpoints/sec",
+        metrics.checkpoints_per_sec()
+    );
     println!("  Data downloaded: {:.2} MB", metrics.mb_downloaded());
     println!("  Download speed: {:.2} MB/s", metrics.throughput_mbps());
     println!();

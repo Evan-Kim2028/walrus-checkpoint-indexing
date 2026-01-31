@@ -86,29 +86,29 @@
 //! - [`config`]: Configuration and CLI argument handling
 //! - [`handlers`]: Checkpoint event handling traits and examples
 
-pub mod storage;
-pub mod node_health;
-pub mod sliver;
 pub mod blob;
 pub mod config;
+pub mod deepbook;
 pub mod handlers;
 pub mod indexer;
-pub mod deepbook;
+pub mod node_health;
+pub mod sliver;
+pub mod storage;
 
 // Re-exports for convenience
-pub use storage::WalrusStorage;
-pub use config::{Config, CliCapabilities, FetchStrategy};
+pub use config::{CliCapabilities, Config, FetchStrategy};
+pub use handlers::CheckpointHandler;
+pub use indexer::{IndexerConfig, IndexerStats, MassIndexer, Processor, Watermark};
 pub use node_health::NodeHealthTracker;
 pub use sliver::SliverPredictor;
-pub use handlers::CheckpointHandler;
-pub use indexer::{MassIndexer, Processor, IndexerConfig, Watermark, IndexerStats};
+pub use storage::WalrusStorage;
 
 /// Prelude module for common imports
 pub mod prelude {
-    pub use crate::storage::WalrusStorage;
-    pub use crate::config::{Config, CliCapabilities, FetchStrategy};
+    pub use crate::config::{CliCapabilities, Config, FetchStrategy};
     pub use crate::handlers::CheckpointHandler;
-    pub use crate::indexer::{MassIndexer, Processor, IndexerConfig, Watermark};
+    pub use crate::indexer::{IndexerConfig, MassIndexer, Processor, Watermark};
+    pub use crate::storage::WalrusStorage;
     pub use sui_types::full_checkpoint_content::CheckpointData;
     pub use sui_types::messages_checkpoint::CheckpointSequenceNumber;
 }
