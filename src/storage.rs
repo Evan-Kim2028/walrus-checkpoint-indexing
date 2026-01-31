@@ -30,6 +30,7 @@
 use anyhow::{Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt};
 use futures::stream::{self, StreamExt};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -42,6 +43,7 @@ use std::time::Duration;
 use std::time::Instant;
 use sui_types::full_checkpoint_content::CheckpointData;
 use sui_types::messages_checkpoint::CheckpointSequenceNumber;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
@@ -890,15 +892,25 @@ impl WalrusStorage {
         blobs
     }
 
-    /// Prefetch multiple blobs in parallel
+    /// Prefetch multiple blobs in parallel (no progress bars)
     /// Returns the number of blobs successfully prefetched
     pub async fn prefetch_blobs_parallel(
         &self,
         blob_ids: &[String],
         concurrency: usize,
     ) -> Result<usize> {
-        use std::time::Instant;
+        self.prefetch_blobs_parallel_with_progress(blob_ids, concurrency, false)
+            .await
+    }
 
+    /// Prefetch multiple blobs in parallel with optional progress bars
+    /// Returns the number of blobs successfully prefetched
+    pub async fn prefetch_blobs_parallel_with_progress(
+        &self,
+        blob_ids: &[String],
+        concurrency: usize,
+        show_progress: bool,
+    ) -> Result<usize> {
         if blob_ids.is_empty() {
             return Ok(0);
         }
@@ -911,14 +923,26 @@ impl WalrusStorage {
         );
         let start_time = Instant::now();
 
-        let results: Vec<Result<PathBuf>> = stream::iter(blob_ids.iter().cloned())
-            .map(|blob_id| {
+        // Set up multi-progress for concurrent progress bars
+        let multi_progress = if show_progress {
+            Some(Arc::new(MultiProgress::new()))
+        } else {
+            None
+        };
+
+        let results: Vec<Result<PathBuf>> = stream::iter(blob_ids.iter().cloned().enumerate())
+            .map(|(idx, blob_id)| {
                 let storage = self.clone();
+                let mp = multi_progress.clone();
                 async move {
                     if storage.inner.walrus_cli_path.is_some() {
-                        storage.download_blob_via_cli(&blob_id).await
+                        storage
+                            .download_blob_via_cli_with_progress(&blob_id, idx, mp)
+                            .await
                     } else {
-                        storage.download_blob_via_http(&blob_id).await
+                        storage
+                            .download_blob_via_http_with_progress(&blob_id, idx, mp)
+                            .await
                     }
                 }
             })
@@ -941,14 +965,26 @@ impl WalrusStorage {
         let elapsed = start_time.elapsed();
         let total_bytes = self.bytes_downloaded();
         let mb = total_bytes as f64 / 1_000_000.0;
-        tracing::info!(
-            "Parallel prefetch complete: {}/{} blobs in {:.2}s ({:.2} MB total, {:.2} MB/s avg)",
-            success_count,
-            blob_ids.len(),
-            elapsed.as_secs_f64(),
-            mb,
-            mb / elapsed.as_secs_f64()
-        );
+
+        if show_progress {
+            eprintln!(
+                "\nPrefetch complete: {}/{} blobs in {:.1}s ({:.1} MB, {:.1} MB/s)",
+                success_count,
+                blob_ids.len(),
+                elapsed.as_secs_f64(),
+                mb,
+                mb / elapsed.as_secs_f64()
+            );
+        } else {
+            tracing::info!(
+                "Parallel prefetch complete: {}/{} blobs in {:.2}s ({:.2} MB total, {:.2} MB/s avg)",
+                success_count,
+                blob_ids.len(),
+                elapsed.as_secs_f64(),
+                mb,
+                mb / elapsed.as_secs_f64()
+            );
+        }
 
         if fail_count > 0 {
             tracing::warn!("{} blobs failed to prefetch", fail_count);
@@ -1017,6 +1053,231 @@ impl WalrusStorage {
         );
 
         Ok(output_path)
+    }
+
+    /// Download blob via HTTP with progress bar
+    async fn download_blob_via_http_with_progress(
+        &self,
+        blob_id: &str,
+        blob_index: usize,
+        multi_progress: Option<Arc<MultiProgress>>,
+    ) -> Result<PathBuf> {
+        let output_path = self.get_cached_blob_path(blob_id);
+
+        if output_path.exists() {
+            // Show cached status briefly
+            if let Some(mp) = &multi_progress {
+                let pb = mp.add(ProgressBar::new(100));
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template("{prefix:.bold} {msg}")
+                        .unwrap(),
+                );
+                pb.set_prefix(format!("[Blob {}]", blob_index + 1));
+                pb.set_message("cached ✓");
+                pb.finish();
+            }
+            return Ok(output_path);
+        }
+
+        let start_time = Instant::now();
+        let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
+        let short_id = &blob_id[..12.min(blob_id.len())];
+
+        // First, get the content length with a HEAD request
+        let total_size = match self
+            .inner
+            .client
+            .head(&url)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+        {
+            Ok(resp) => resp
+                .headers()
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(3_200_000_000),
+            Err(_) => 3_200_000_000, // Default ~3.2 GB estimate
+        };
+
+        // Create progress bar
+        let pb = if let Some(mp) = &multi_progress {
+            let pb = mp.add(ProgressBar::new(total_size));
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{prefix:.bold} [{bar:30.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) {msg}")
+                    .unwrap()
+                    .progress_chars("█▓░"),
+            );
+            pb.set_prefix(format!("[Blob {}]", blob_index + 1));
+            pb.set_message(format!("{}...", short_id));
+            Some(pb)
+        } else {
+            None
+        };
+
+        // Stream the download with progress updates
+        let response = self
+            .inner
+            .client
+            .get(&url)
+            .timeout(Duration::from_secs(600))
+            .send()
+            .await
+            .with_context(|| format!("failed to start download for blob {}", blob_id))?;
+
+        if !response.status().is_success() {
+            if let Some(pb) = &pb {
+                pb.abandon_with_message("failed");
+            }
+            return Err(anyhow::anyhow!(
+                "HTTP {} for blob {}",
+                response.status(),
+                blob_id
+            ));
+        }
+
+        // Stream to file with progress
+        let temp_path = output_path.with_extension("tmp");
+        let mut file = tokio::fs::File::create(&temp_path)
+            .await
+            .with_context(|| format!("failed to create temp file {:?}", temp_path))?;
+
+        let mut stream = response.bytes_stream();
+        let mut downloaded: u64 = 0;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.with_context(|| "error reading response chunk")?;
+            file.write_all(&chunk)
+                .await
+                .with_context(|| "error writing chunk to file")?;
+            downloaded += chunk.len() as u64;
+            if let Some(pb) = &pb {
+                pb.set_position(downloaded);
+            }
+        }
+
+        file.flush().await?;
+        drop(file);
+
+        // Rename for atomicity
+        tokio::fs::rename(&temp_path, &output_path)
+            .await
+            .with_context(|| format!("failed to rename {:?} to {:?}", temp_path, output_path))?;
+
+        let elapsed = start_time.elapsed();
+        self.inner
+            .bytes_downloaded
+            .fetch_add(downloaded, Ordering::Relaxed);
+
+        if let Some(pb) = &pb {
+            let mb = downloaded as f64 / 1_000_000.0;
+            pb.finish_with_message(format!(
+                "done ({:.1} MB, {:.1} MB/s)",
+                mb,
+                mb / elapsed.as_secs_f64()
+            ));
+        }
+
+        Ok(output_path)
+    }
+
+    /// Download blob via CLI with progress bar
+    async fn download_blob_via_cli_with_progress(
+        &self,
+        blob_id: &str,
+        blob_index: usize,
+        multi_progress: Option<Arc<MultiProgress>>,
+    ) -> Result<PathBuf> {
+        let cli_path = self
+            .inner
+            .walrus_cli_path
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Walrus CLI path not configured"))?;
+
+        let output_path = self.get_cached_blob_path(blob_id);
+
+        if output_path.exists() {
+            if let Some(mp) = &multi_progress {
+                let pb = mp.add(ProgressBar::new(100));
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template("{prefix:.bold} {msg}")
+                        .unwrap(),
+                );
+                pb.set_prefix(format!("[Blob {}]", blob_index + 1));
+                pb.set_message("cached ✓");
+                pb.finish();
+            }
+            return Ok(output_path);
+        }
+
+        let start_time = Instant::now();
+        let short_id = &blob_id[..12.min(blob_id.len())];
+
+        // CLI downloads don't provide streaming progress, so use a spinner
+        let pb = if let Some(mp) = &multi_progress {
+            let pb = mp.add(ProgressBar::new_spinner());
+            pb.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{prefix:.bold} {spinner} {msg}")
+                    .unwrap(),
+            );
+            pb.set_prefix(format!("[Blob {}]", blob_index + 1));
+            pb.set_message(format!("downloading {}... (via CLI)", short_id));
+            pb.enable_steady_tick(Duration::from_millis(100));
+            Some(pb)
+        } else {
+            None
+        };
+
+        let mut cmd = Command::new(cli_path);
+        cmd.arg("read")
+            .arg(blob_id)
+            .arg("--context")
+            .arg(&self.inner.walrus_cli_context)
+            .arg("--out")
+            .arg(&output_path);
+
+        let output = self.run_cli_with_timeout(cmd).await;
+
+        match output {
+            Ok(output) if output.status.success() => {
+                let elapsed = start_time.elapsed();
+                let size = tokio::fs::metadata(&output_path)
+                    .await
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                self.inner
+                    .bytes_downloaded
+                    .fetch_add(size, Ordering::Relaxed);
+
+                if let Some(pb) = &pb {
+                    let mb = size as f64 / 1_000_000.0;
+                    pb.finish_with_message(format!(
+                        "done ({:.1} MB, {:.1} MB/s)",
+                        mb,
+                        mb / elapsed.as_secs_f64()
+                    ));
+                }
+                Ok(output_path)
+            }
+            Ok(output) => {
+                if let Some(pb) = &pb {
+                    pb.abandon_with_message("failed");
+                }
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Err(anyhow::anyhow!("CLI failed: {}", stderr))
+            }
+            Err(e) => {
+                if let Some(pb) = &pb {
+                    pb.abandon_with_message("failed");
+                }
+                Err(e)
+            }
+        }
     }
 
     async fn read_range_via_cli(&self, blob_id: &str, start: u64, length: u64) -> Result<Vec<u8>> {

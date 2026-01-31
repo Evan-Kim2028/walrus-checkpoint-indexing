@@ -18,13 +18,14 @@
 //!   --cache-enabled \
 //!   --duckdb-summary
 //!
-//! # Large run with parallel blob prefetching (132k checkpoints, ~12 minutes)
+//! # Large run with parallel blob prefetching and progress bars
 //! cargo run --release --example alt_checkpoint_parquet --features duckdb -- \
 //!   --start 238954764 --end 239086998 \
 //!   --output-dir ./parquet_output \
 //!   --cache-enabled \
 //!   --parallel-prefetch \
 //!   --prefetch-concurrency 4 \
+//!   --show-progress \
 //!   --duckdb-summary
 //! ```
 //!
@@ -38,6 +39,7 @@
 //! | `--cache-enabled` | Cache downloaded blobs locally | false |
 //! | `--parallel-prefetch` | Download blobs in parallel before processing | false |
 //! | `--prefetch-concurrency` | Number of parallel blob downloads | 4 |
+//! | `--show-progress` | Show download progress bars | false |
 //! | `--spool-mode` | `ephemeral` (temp) or `cache` (persistent) | `ephemeral` |
 //! | `--duckdb-summary` | Print data summary after indexing | false |
 //!
@@ -174,6 +176,10 @@ struct Args {
     /// Concurrency level for parallel blob prefetching (default: 4)
     #[arg(long, default_value = "4")]
     prefetch_concurrency: usize,
+
+    /// Show download progress bars (requires --parallel-prefetch)
+    #[arg(long)]
+    show_progress: bool,
 
     #[command(flatten)]
     walrus: Config,
@@ -1991,7 +1997,11 @@ async fn main() -> Result<()> {
         let blob_ids: Vec<String> = blobs.iter().map(|b| b.blob_id.clone()).collect();
         let prefetch_start = std::time::Instant::now();
         let prefetched = storage
-            .prefetch_blobs_parallel(&blob_ids, args.prefetch_concurrency)
+            .prefetch_blobs_parallel_with_progress(
+                &blob_ids,
+                args.prefetch_concurrency,
+                args.show_progress,
+            )
             .await?;
         let prefetch_elapsed = prefetch_start.elapsed();
         println!(
