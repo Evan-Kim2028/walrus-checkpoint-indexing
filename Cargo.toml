@@ -50,17 +50,17 @@ base64 = "0.22"
 byteorder = "1.5"
 async-trait = "0.1"
 
-# Parquet output (optional)
-parquet = { version = "54", optional = true }
-arrow = { version = "54", optional = true }
+# Parquet output
+parquet = "54"
+arrow = "54"
 duckdb = { version = "1.4.4", optional = true, features = ["bundled"] }
 
-# Sui indexer alt framework integration (optional)
-sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", tag = "mainnet-v1.64.2", package = "sui-indexer-alt-framework", optional = true }
-sui-indexer-alt-framework-store-traits = { git = "https://github.com/MystenLabs/sui.git", tag = "mainnet-v1.64.2", package = "sui-indexer-alt-framework-store-traits", optional = true }
-tempfile = { version = "3.10", optional = true }
-scoped-futures = { version = "0.1", optional = true }
-prometheus = { version = "0.13", optional = true }
+# Sui indexer alt framework integration
+sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", tag = "mainnet-v1.64.2", package = "sui-indexer-alt-framework" }
+sui-indexer-alt-framework-store-traits = { git = "https://github.com/MystenLabs/sui.git", tag = "mainnet-v1.64.2", package = "sui-indexer-alt-framework-store-traits" }
+tempfile = "3.10"
+scoped-futures = "0.1"
+prometheus = "0.13"
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -88,31 +88,16 @@ path = "examples/mass_indexer.rs"
 [[example]]
 name = "mass_indexer_parquet"
 path = "examples/mass_indexer_parquet.rs"
-required-features = ["parquet-output"]
 
 [[example]]
 name = "alt_checkpoint_parquet"
 path = "examples/alt_checkpoint_parquet.rs"
-required-features = ["parquet-output", "alt-framework"]
 
 [[example]]
 name = "deepbook_alt_parquet"
 path = "examples/deepbook_alt_parquet.rs"
-required-features = ["parquet-output", "alt-framework"]
 
 [features]
 default = []
-# Enable DeepBook-specific event handling as an example
-deepbook-example = []
-# Enable parquet output support
-parquet-output = ["parquet", "arrow"]
 # Enable DuckDB summaries for parquet outputs
 duckdb = ["dep:duckdb"]
-# Enable Sui indexer alt framework integration
-alt-framework = [
-    "sui-indexer-alt-framework",
-    "sui-indexer-alt-framework-store-traits",
-    "tempfile",
-    "scoped-futures",
-    "prometheus",
-]

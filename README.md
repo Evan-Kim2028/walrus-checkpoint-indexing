@@ -14,6 +14,19 @@ This library provides efficient streaming of Sui checkpoint data stored on Walru
 - **Byte-range streaming** *(Experimental - Forked CLI)*: Stream specific byte ranges using the forked Walrus CLI
 - **Adaptive fetching**: Automatically choose strategy based on network health
 
+## Project Goals
+
+This is a public-good repository focused on:
+
+- **Walrus as an archive backend**: Use Walrus storage as the durable source of truth for Sui checkpoints.
+- **Multiple Walrus sources**: Show how to read checkpoints via the archival service, HTTP aggregator, or Walrus CLI.
+- **Custom indexing**: Provide small, composable examples for event filtering and domain-specific indexing.
+
+If you want the mental model, start with:
+
+- `docs/ARCHIVE_NODE.md` for building a local archive node backed by Walrus
+- `docs/CUSTOM_INDEXING.md` for indexing patterns and example output shapes
+
 ## CLI Compatibility
 
 This library works with **two versions** of the Walrus CLI:
@@ -148,15 +161,20 @@ cargo build --release
 ./target/release/walrus-checkpoint-index health
 ```
 
+### Documentation
+
+- `docs/ARCHIVE_NODE.md`: Build a local archive node using Walrus as the backend
+- `docs/CUSTOM_INDEXING.md`: Custom indexing patterns and output shapes
+
 ### Short Examples
 
 ```bash
-# All events -> Parquet (local spool + Sui alt framework)
-cargo run --release --example alt_checkpoint_parquet --features parquet-output,alt-framework -- \
+# All events -> Parquet
+cargo run --release --example alt_checkpoint_parquet -- \
   --start 239600000 --end 239600050 --output ./checkpoint_events.parquet
 
 # DeepBook decoded events -> Parquet
-cargo run --release --example deepbook_alt_parquet --features parquet-output,alt-framework -- \
+cargo run --release --example deepbook_alt_parquet -- \
   --start 239600000 --end 239600050 --output ./deepbook_events.parquet
 ```
 
@@ -252,27 +270,26 @@ The `alt_checkpoint_parquet` example shows a **lightweight end-to-end flow** tha
 4. Write filtered events to Parquet (DuckDB/Polars friendly)
 
 ```bash
-# Build/run with required features
-cargo run --release --example alt_checkpoint_parquet --features parquet-output,alt-framework -- \
+cargo run --release --example alt_checkpoint_parquet -- \
   --start 239600000 \
   --end 239600050 \
   --output ./checkpoint_events.parquet
 
 # Filter by package (e.g., DeepBook)
-cargo run --release --example alt_checkpoint_parquet --features parquet-output,alt-framework -- \
+cargo run --release --example alt_checkpoint_parquet -- \
   --start 239600000 \
   --end 239600050 \
   --package 0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809
 
 # Reuse spooled checkpoints for faster iteration
-cargo run --release --example alt_checkpoint_parquet --features parquet-output,alt-framework -- \
+cargo run --release --example alt_checkpoint_parquet -- \
   --start 239600000 \
   --end 239600050 \
   --spool-mode cache \
   --spool-dir ./checkpoint-spool
 
 # Optional DuckDB summary (tables + row count)
-cargo run --release --example alt_checkpoint_parquet --features parquet-output,alt-framework,duckdb -- \
+cargo run --release --example alt_checkpoint_parquet --features duckdb -- \
   --start 239600000 \
   --end 239600050 \
   --duckdb-summary
@@ -287,18 +304,18 @@ The `deepbook_alt_parquet` example is a dedicated DeepBook preset that filters b
 DeepBook package ID by default and writes to `./deepbook_events.parquet`.
 
 ```bash
-cargo run --release --example deepbook_alt_parquet --features parquet-output,alt-framework -- \
+cargo run --release --example deepbook_alt_parquet -- \
   --start 239600000 \
   --end 239600050
 
 # Override the package (optional)
-cargo run --release --example deepbook_alt_parquet --features parquet-output,alt-framework -- \
+cargo run --release --example deepbook_alt_parquet -- \
   --start 239600000 \
   --end 239600050 \
   --package 0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809
 
 # Optional DuckDB summary (tables + row count)
-cargo run --release --example deepbook_alt_parquet --features parquet-output,alt-framework,duckdb -- \
+cargo run --release --example deepbook_alt_parquet --features duckdb -- \
   --start 239600000 \
   --end 239600050 \
   --duckdb-summary
