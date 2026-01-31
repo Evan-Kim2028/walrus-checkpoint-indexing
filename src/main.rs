@@ -101,7 +101,7 @@ async fn stream_checkpoints(
         .stream_checkpoints(start..end, |checkpoint| {
             count += 1;
             async move {
-                if count % log_interval == 0 {
+                if count.is_multiple_of(log_interval) {
                     let elapsed = start_time.elapsed().as_secs_f64();
                     let rate = count as f64 / elapsed;
                     tracing::info!(

@@ -203,9 +203,8 @@ impl SliverPredictor {
         let rotation_offset = self.compute_rotation_offset(blob_id)?;
 
         // Calculate how many symbols/slivers this blob actually uses
-        let total_symbols = (blob_size + self.symbol_size - 1) / self.symbol_size;
-        let actual_primary_slivers =
-            (total_symbols + SOURCE_SYMBOLS_SECONDARY - 1) / SOURCE_SYMBOLS_SECONDARY;
+        let total_symbols = blob_size.div_ceil(self.symbol_size);
+        let actual_primary_slivers = total_symbols.div_ceil(SOURCE_SYMBOLS_SECONDARY);
         let actual_primary_slivers = actual_primary_slivers.min(SOURCE_SYMBOLS_PRIMARY);
 
         // Find which primary slivers are problematic

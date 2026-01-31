@@ -120,7 +120,7 @@ impl CheckpointHandler for LoggingHandler {
     async fn handle_checkpoint(&mut self, checkpoint: &CheckpointData) -> Result<()> {
         self.count += 1;
 
-        if self.count % self.log_interval == 0 {
+        if self.count.is_multiple_of(self.log_interval) {
             let elapsed = self.start_time.elapsed().as_secs_f64();
             let rate = self.count as f64 / elapsed;
             tracing::info!(

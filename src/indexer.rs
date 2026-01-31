@@ -394,12 +394,12 @@ impl<P: Processor> MassIndexer<P> {
             stats.current_checkpoint = Some(checkpoint_num);
 
             // Update watermark periodically
-            if stats.checkpoints_processed % watermark_interval == 0 {
+            if stats.checkpoints_processed.is_multiple_of(watermark_interval) {
                 self.watermark.save(checkpoint_num).await?;
             }
 
             // Log progress
-            if stats.checkpoints_processed % log_interval == 0 {
+            if stats.checkpoints_processed.is_multiple_of(log_interval) {
                 let elapsed = start_time.elapsed().as_secs_f64();
                 let rate = stats.checkpoints_processed as f64 / elapsed;
                 let progress =
