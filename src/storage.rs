@@ -161,8 +161,6 @@ struct Inner {
     walrus_cli_range_concurrency: usize,
     walrus_cli_range_max_retries: usize,
     walrus_cli_range_retry_delay_secs: u64,
-    #[allow(dead_code)]
-    http_timeout_secs: u64,
     client: Client,
     index_cache: RwLock<HashMap<String, HashMap<u64, BlobIndexEntry>>>,
     blob_size_cache: RwLock<HashMap<String, u64>>,
@@ -215,7 +213,6 @@ impl WalrusStorage {
                 walrus_cli_range_concurrency: config.range_concurrency.max(1),
                 walrus_cli_range_max_retries: config.max_retries.max(1),
                 walrus_cli_range_retry_delay_secs: config.retry_delay_secs,
-                http_timeout_secs: config.http_timeout_secs,
                 client: Client::builder()
                     .timeout(Duration::from_secs(config.http_timeout_secs))
                     .build()
@@ -876,6 +873,88 @@ impl WalrusStorage {
     /// Check if a blob is cached
     pub fn is_blob_cached(&self, blob_id: &str) -> bool {
         self.get_cached_blob_path(blob_id).exists()
+    }
+
+    /// Get blobs that cover a checkpoint range
+    pub async fn get_blobs_for_range(
+        &self,
+        range: std::ops::Range<CheckpointSequenceNumber>,
+    ) -> Vec<BlobMetadata> {
+        let metadata = self.inner.metadata.read().await;
+        let mut blobs: Vec<BlobMetadata> = metadata
+            .iter()
+            .filter(|b| b.end_checkpoint >= range.start && b.start_checkpoint < range.end)
+            .cloned()
+            .collect();
+        blobs.sort_by_key(|b| b.start_checkpoint);
+        blobs
+    }
+
+    /// Prefetch multiple blobs in parallel
+    /// Returns the number of blobs successfully prefetched
+    pub async fn prefetch_blobs_parallel(
+        &self,
+        blob_ids: &[String],
+        concurrency: usize,
+    ) -> Result<usize> {
+        use std::time::Instant;
+
+        if blob_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let concurrency = concurrency.max(1);
+        tracing::info!(
+            "Starting parallel prefetch of {} blobs with concurrency {}",
+            blob_ids.len(),
+            concurrency
+        );
+        let start_time = Instant::now();
+
+        let results: Vec<Result<PathBuf>> = stream::iter(blob_ids.iter().cloned())
+            .map(|blob_id| {
+                let storage = self.clone();
+                async move {
+                    if storage.inner.walrus_cli_path.is_some() {
+                        storage.download_blob_via_cli(&blob_id).await
+                    } else {
+                        storage.download_blob_via_http(&blob_id).await
+                    }
+                }
+            })
+            .buffer_unordered(concurrency)
+            .collect()
+            .await;
+
+        let mut success_count = 0;
+        let mut fail_count = 0;
+        for result in results {
+            match result {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    fail_count += 1;
+                    tracing::warn!("Failed to prefetch blob: {}", e);
+                }
+            }
+        }
+
+        let elapsed = start_time.elapsed();
+        let total_bytes = self.bytes_downloaded();
+        let mb = total_bytes as f64 / 1_000_000.0;
+        tracing::info!(
+            "Parallel prefetch complete: {}/{} blobs in {:.2}s ({:.2} MB total, {:.2} MB/s avg)",
+            success_count,
+            blob_ids.len(),
+            elapsed.as_secs_f64(),
+            mb,
+            mb / elapsed.as_secs_f64()
+        );
+
+        if fail_count > 0 {
+            tracing::warn!("{} blobs failed to prefetch", fail_count);
+        }
+
+        Ok(success_count)
     }
 
     async fn download_blob_via_http(&self, blob_id: &str) -> Result<PathBuf> {
