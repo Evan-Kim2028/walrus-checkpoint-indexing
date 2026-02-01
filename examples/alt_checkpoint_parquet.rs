@@ -1957,11 +1957,12 @@ fn duckdb_summary(_output_dir: &Path) -> Result<()> {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    // Configure tracing to write to stderr (not stdout) so piping to DuckDB works
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 
     if args.start >= args.end {
