@@ -61,7 +61,7 @@ pub use handlers::CheckpointHandler;
 pub use indexer::{IndexerConfig, IndexerStats, MassIndexer, Processor, Watermark};
 pub use node_health::NodeHealthTracker;
 pub use sliver::SliverPredictor;
-pub use storage::WalrusStorage;
+pub use storage::{ArchiveStats, WalrusStorage};
 
 /// Prelude module for common imports
 pub mod prelude {

@@ -1987,6 +1987,23 @@ async fn main() -> Result<()> {
     let storage = WalrusStorage::new(args.walrus.clone()).await?;
     storage.initialize().await?;
 
+    // Display archive statistics
+    let stats = storage.archive_stats().await;
+    let total_archive_gb = stats.total_size_bytes as f64 / 1_000_000_000.0;
+    eprintln!();
+    eprintln!("=== Archive Available ===");
+    eprintln!(
+        "Checkpoint range: {}..{} ({} checkpoints)",
+        stats.first_checkpoint, stats.last_checkpoint, stats.total_checkpoints
+    );
+    eprintln!(
+        "Total archive: {} blobs ({:.2} GB)",
+        stats.total_blobs, total_archive_gb
+    );
+    if stats.epoch_boundary_blobs > 0 {
+        eprintln!("Epoch boundary blobs: {}", stats.epoch_boundary_blobs);
+    }
+
     // Parallel blob prefetching if enabled
     if args.parallel_prefetch {
         let blobs = storage.get_blobs_for_range(args.start..args.end).await;
@@ -2002,6 +2019,21 @@ async fn main() -> Result<()> {
         eprintln!("Checkpoints: {} (range {}..{})", checkpoints_requested, args.start, args.end);
         eprintln!("Blobs to download: {}", num_blobs);
         eprintln!("Total download size: {:.2} GB", total_gb);
+        eprintln!();
+        eprintln!("Individual blobs:");
+        for (i, blob) in blobs.iter().enumerate() {
+            let size_gb = blob.total_size as f64 / 1_000_000_000.0;
+            eprintln!(
+                "  [{}] {} ({:.2} GB, {} checkpoints: {}..{})",
+                i + 1,
+                blob.blob_id,
+                size_gb,
+                blob.entries_count,
+                blob.start_checkpoint,
+                blob.end_checkpoint
+            );
+        }
+        eprintln!();
         eprintln!("Concurrency: {} parallel downloads", args.prefetch_concurrency);
         eprintln!("Timeout: {} seconds per blob", args.walrus.cli_timeout_secs);
         eprintln!();

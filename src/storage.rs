@@ -141,6 +141,23 @@ pub struct DownloadStats {
     pub checkpoints_processed: u64,
 }
 
+/// Statistics about the available archive
+#[derive(Debug, Clone, Default)]
+pub struct ArchiveStats {
+    /// Total number of blobs in the archive
+    pub total_blobs: usize,
+    /// Total number of checkpoints across all blobs
+    pub total_checkpoints: u64,
+    /// Total size of all blobs in bytes
+    pub total_size_bytes: u64,
+    /// First available checkpoint number
+    pub first_checkpoint: u64,
+    /// Last available checkpoint number
+    pub last_checkpoint: u64,
+    /// Number of blobs that end at an epoch boundary
+    pub epoch_boundary_blobs: usize,
+}
+
 /// Walrus checkpoint storage
 ///
 /// Downloads checkpoints from Walrus aggregator using blob-based storage:
@@ -473,6 +490,31 @@ impl WalrusStorage {
         let min_start = metadata.iter().map(|b| b.start_checkpoint).min()?;
         let max_end = metadata.iter().map(|b| b.end_checkpoint).max()?;
         Some((min_start, max_end))
+    }
+
+    /// Get comprehensive statistics about the available archive
+    pub async fn archive_stats(&self) -> ArchiveStats {
+        let metadata = self.inner.metadata.read().await;
+
+        if metadata.is_empty() {
+            return ArchiveStats::default();
+        }
+
+        let total_blobs = metadata.len();
+        let total_checkpoints: u64 = metadata.iter().map(|b| b.entries_count).sum();
+        let total_size_bytes: u64 = metadata.iter().map(|b| b.total_size).sum();
+        let first_checkpoint = metadata.iter().map(|b| b.start_checkpoint).min().unwrap_or(0);
+        let last_checkpoint = metadata.iter().map(|b| b.end_checkpoint).max().unwrap_or(0);
+        let epoch_boundary_blobs = metadata.iter().filter(|b| b.end_of_epoch).count();
+
+        ArchiveStats {
+            total_blobs,
+            total_checkpoints,
+            total_size_bytes,
+            first_checkpoint,
+            last_checkpoint,
+            epoch_boundary_blobs,
+        }
     }
 
     /// Find blob containing a specific checkpoint
@@ -1086,7 +1128,6 @@ impl WalrusStorage {
 
         let start_time = Instant::now();
         let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
-        let short_id = &blob_id[..12.min(blob_id.len())];
 
         // Try to get content length with a HEAD request
         let total_size = match self
@@ -1126,7 +1167,7 @@ impl WalrusStorage {
                 pb
             };
             pb.set_prefix(format!("[Blob {}]", blob_index + 1));
-            pb.set_message(format!("{}...", short_id));
+            pb.set_message(blob_id.to_string());
             Some(pb)
         } else {
             None
@@ -1232,7 +1273,6 @@ impl WalrusStorage {
         }
 
         let start_time = Instant::now();
-        let short_id = &blob_id[..12.min(blob_id.len())];
 
         // Create progress bar with elapsed time
         // Note: Walrus CLI doesn't provide progress - it downloads to memory then writes file
@@ -1244,7 +1284,7 @@ impl WalrusStorage {
                     .unwrap(),
             );
             pb.set_prefix(format!("[Blob {}]", blob_index + 1));
-            pb.set_message(format!("{}...", short_id));
+            pb.set_message(blob_id.to_string());
             pb.enable_steady_tick(Duration::from_millis(100));
             Some(pb)
         } else {
