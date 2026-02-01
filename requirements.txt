@@ -1,0 +1,11 @@
+# Python dependencies for data analysis
+# Install with: uv pip install -r requirements.txt
+
+# Query Parquet files
+duckdb>=1.2.0
+
+# DataFrame library (fast alternative to pandas)
+polars>=1.20.0
+
+# Arrow format support
+pyarrow>=19.0.0

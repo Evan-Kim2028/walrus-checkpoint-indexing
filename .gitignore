@@ -25,3 +25,8 @@ backfill_progress.state
 # Logs
 *.log
 logs/
+
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc

@@ -190,8 +190,16 @@ impl WalrusStorage {
             std::fs::create_dir_all(&cache_dir).context("failed to create cache dir")?;
         }
 
+        // Resolve CLI path (explicit or auto-detected from PATH)
+        let resolved_cli_path = config.resolved_cli_path();
+        if let Some(ref path) = resolved_cli_path {
+            tracing::info!("Using Walrus CLI: {}", path.display());
+        } else {
+            tracing::info!("Walrus CLI not found, falling back to HTTP aggregator");
+        }
+
         // Create health tracker if CLI path is available
-        let health_tracker = config.walrus_cli_path.as_ref().map(|cli_path| {
+        let health_tracker = resolved_cli_path.as_ref().map(|cli_path| {
             NodeHealthTracker::new(
                 cli_path.clone(),
                 config.walrus_cli_context.clone(),
@@ -206,7 +214,7 @@ impl WalrusStorage {
                 aggregator_url: config.aggregator_url,
                 cache_dir,
                 cache_enabled: config.cache_enabled,
-                walrus_cli_path: config.walrus_cli_path,
+                walrus_cli_path: resolved_cli_path,
                 walrus_cli_context: config.walrus_cli_context,
                 walrus_cli_timeout_secs: config.cli_timeout_secs,
                 coalesce_gap_bytes: config.coalesce_gap_bytes,
@@ -1084,7 +1092,7 @@ impl WalrusStorage {
         let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
         let short_id = &blob_id[..12.min(blob_id.len())];
 
-        // First, get the content length with a HEAD request
+        // Try to get content length with a HEAD request
         let total_size = match self
             .inner
             .client
@@ -1097,20 +1105,30 @@ impl WalrusStorage {
                 .headers()
                 .get("content-length")
                 .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(3_200_000_000),
-            Err(_) => 3_200_000_000, // Default ~3.2 GB estimate
+                .and_then(|s| s.parse::<u64>().ok()),
+            Err(_) => None,
         };
 
-        // Create progress bar
+        // Create progress bar - use spinner style if size unknown
         let pb = if let Some(mp) = &multi_progress {
-            let pb = mp.add(ProgressBar::new(total_size));
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("{prefix:.bold} [{bar:30.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) {msg}")
-                    .unwrap()
-                    .progress_chars("█▓░"),
-            );
+            let pb = if let Some(size) = total_size {
+                let pb = mp.add(ProgressBar::new(size));
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template("{prefix:.bold} [{bar:30.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) {msg}")
+                        .unwrap()
+                        .progress_chars("█▓░"),
+                );
+                pb
+            } else {
+                let pb = mp.add(ProgressBar::new_spinner());
+                pb.set_style(
+                    ProgressStyle::default_spinner()
+                        .template("{prefix:.bold} {bytes} downloaded ({bytes_per_sec}) {msg}")
+                        .unwrap(),
+                );
+                pb
+            };
             pb.set_prefix(format!("[Blob {}]", blob_index + 1));
             pb.set_message(format!("{}...", short_id));
             Some(pb)

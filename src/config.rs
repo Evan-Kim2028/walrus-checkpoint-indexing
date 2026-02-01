@@ -13,6 +13,26 @@
 
 use clap::Parser;
 use std::path::PathBuf;
+use std::process::Command;
+
+/// Try to find the walrus CLI binary in PATH.
+/// Returns the path if found and executable.
+pub fn find_walrus_cli() -> Option<PathBuf> {
+    // Try 'which walrus' on Unix or 'where walrus' on Windows
+    #[cfg(unix)]
+    let output = Command::new("which").arg("walrus").output().ok()?;
+    #[cfg(windows)]
+    let output = Command::new("where").arg("walrus").output().ok()?;
+
+    if output.status.success() {
+        let path_str = String::from_utf8_lossy(&output.stdout);
+        let path = PathBuf::from(path_str.trim());
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
 
 /// CLI capabilities - distinguishes between official and forked Walrus CLI.
 ///
@@ -253,17 +273,23 @@ impl Config {
     }
 
     /// Check if CLI is available (any version).
+    /// Checks explicit path first, then falls back to PATH auto-detection.
     pub fn cli_available(&self) -> bool {
-        self.walrus_cli_path.is_some()
+        self.resolved_cli_path().is_some()
+    }
+
+    /// Get the resolved CLI path (explicit or auto-detected from PATH).
+    pub fn resolved_cli_path(&self) -> Option<PathBuf> {
+        self.walrus_cli_path.clone().or_else(find_walrus_cli)
     }
 
     /// Check if byte-range streaming is available.
     ///
     /// Requires both:
-    /// - CLI path configured
+    /// - CLI path available (explicit or auto-detected)
     /// - CLI capabilities set to "forked"
     pub fn byte_range_streaming_available(&self) -> bool {
-        self.walrus_cli_path.is_some() && self.cli_capabilities() == CliCapabilities::Forked
+        self.resolved_cli_path().is_some() && self.cli_capabilities() == CliCapabilities::Forked
     }
 
     /// Validate that config is consistent.
