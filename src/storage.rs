@@ -185,17 +185,28 @@ impl WalrusStorage {
             .clone()
             .unwrap_or_else(|| PathBuf::from(".walrus-cache"));
 
-        // Create cache directory if caching is enabled (for CLI or HTTP)
-        if config.cache_enabled {
+        // Resolve CLI path (explicit or auto-detected from PATH)
+        let resolved_cli_path = config.resolved_cli_path();
+
+        // When CLI is configured, caching is required (CLI downloads full blobs)
+        let cache_enabled = if resolved_cli_path.is_some() {
+            if !config.cache_enabled {
+                tracing::info!("Enabling cache (required for CLI mode)");
+            }
+            true
+        } else {
+            config.cache_enabled
+        };
+
+        // Create cache directory if caching is enabled
+        if cache_enabled {
             std::fs::create_dir_all(&cache_dir).context("failed to create cache dir")?;
         }
 
-        // Resolve CLI path (explicit or auto-detected from PATH)
-        let resolved_cli_path = config.resolved_cli_path();
         if let Some(ref path) = resolved_cli_path {
             tracing::info!("Using Walrus CLI: {}", path.display());
         } else {
-            tracing::info!("Walrus CLI not found, falling back to HTTP aggregator");
+            tracing::info!("Using HTTP aggregator (Walrus CLI not found)");
         }
 
         // Create health tracker if CLI path is available
@@ -213,7 +224,7 @@ impl WalrusStorage {
                 archival_url: config.archival_url,
                 aggregator_url: config.aggregator_url,
                 cache_dir,
-                cache_enabled: config.cache_enabled,
+                cache_enabled,
                 walrus_cli_path: resolved_cli_path,
                 walrus_cli_context: config.walrus_cli_context,
                 walrus_cli_timeout_secs: config.cli_timeout_secs,
@@ -291,6 +302,7 @@ impl WalrusStorage {
     }
 
     /// Check if health poll is needed based on timeout count
+    #[allow(dead_code)]
     async fn maybe_poll_health_on_timeout(&self) {
         let current_timeouts = self.inner.timeout_count.load(Ordering::Relaxed);
         let last_poll_timeouts = self
@@ -318,6 +330,7 @@ impl WalrusStorage {
         }
     }
 
+    #[allow(dead_code)]
     fn record_timeout(&self) {
         self.inner.timeout_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -343,6 +356,7 @@ impl WalrusStorage {
         predictor.classify_range(blob_id, range)
     }
 
+    #[allow(dead_code)]
     async fn log_blob_analysis(&self, blob_id: &str, blob_size: u64) {
         if let Some(analysis) = self.analyze_blob(blob_id, blob_size).await {
             let safe_count = analysis.safe_ranges.len();
@@ -530,18 +544,6 @@ impl WalrusStorage {
             let max_gap_bytes = self.inner.coalesce_gap_bytes;
             let max_range_bytes = self.inner.coalesce_max_range_bytes;
 
-            // Log blob analysis for streaming mode
-            if self.inner.walrus_cli_path.is_some() && !self.inner.cache_enabled {
-                match self.blob_size_via_cli(&blob.blob_id).await {
-                    Ok(actual_size) => {
-                        self.log_blob_analysis(&blob.blob_id, actual_size).await;
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to get blob size for analysis: {}", e);
-                    }
-                }
-            }
-
             let pending: Vec<(CheckpointSequenceNumber, BlobIndexEntry, ())> = tasks
                 .into_iter()
                 .map(|(cp_num, entry)| (cp_num, entry, ()))
@@ -672,18 +674,6 @@ impl WalrusStorage {
 
                     if tasks.is_empty() {
                         return Ok::<(), anyhow::Error>(());
-                    }
-
-                    // Log blob analysis
-                    if storage.inner.walrus_cli_path.is_some() && !storage.inner.cache_enabled {
-                        match storage.blob_size_via_cli(&blob.blob_id).await {
-                            Ok(actual_size) => {
-                                storage.log_blob_analysis(&blob.blob_id, actual_size).await;
-                            }
-                            Err(e) => {
-                                tracing::warn!("failed to get blob size for analysis: {}", e);
-                            }
-                        }
                     }
 
                     let chunk_size = if storage.inner.walrus_cli_path.is_some() {
@@ -1321,6 +1311,7 @@ impl WalrusStorage {
         }
     }
 
+    #[allow(dead_code)]
     async fn read_range_via_cli(&self, blob_id: &str, start: u64, length: u64) -> Result<Vec<u8>> {
         let cli_path = self
             .inner
@@ -1367,6 +1358,7 @@ impl WalrusStorage {
         Ok(output.stdout)
     }
 
+    #[allow(dead_code)]
     async fn read_range_via_cli_resilient(
         &self,
         blob_id: &str,
@@ -1406,6 +1398,7 @@ impl WalrusStorage {
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("walrus cli range read failed")))
     }
 
+    #[allow(dead_code)]
     async fn blob_size_via_cli(&self, blob_id: &str) -> Result<u64> {
         // Check cache first
         {
@@ -1492,114 +1485,59 @@ impl WalrusStorage {
             return Ok(index);
         }
 
-        // If CLI is configured and blob is cached locally, read footer + index via range reads
+        // If CLI is configured, download the blob first, then read index from cache
         if self.inner.walrus_cli_path.is_some() {
-            if let Ok(total_size) = self.blob_size_via_cli(blob_id).await {
-                if total_size >= 24 {
-                    let footer_start = total_size - 24;
-                    if let Ok(footer_bytes) = self
-                        .read_range_via_cli_resilient(blob_id, footer_start, 24)
-                        .await
-                    {
-                        if footer_bytes.len() == 24 {
-                            let mut cursor = Cursor::new(&footer_bytes);
-                            let magic = cursor.read_u32::<LittleEndian>()?;
-                            if magic == 0x574c4244 {
-                                let _version = cursor.read_u32::<LittleEndian>()?;
-                                let index_start_offset = cursor.read_u64::<LittleEndian>()?;
-                                let count = cursor.read_u32::<LittleEndian>()?;
+            // Download blob via CLI (this caches it locally)
+            self.download_blob_via_cli(blob_id).await?;
 
-                                if index_start_offset < total_size {
-                                    let index_len = total_size - index_start_offset;
-                                    if let Ok(index_bytes) = self
-                                        .read_range_via_cli_resilient(
-                                            blob_id,
-                                            index_start_offset,
-                                            index_len,
-                                        )
-                                        .await
-                                    {
-                                        let mut cursor = Cursor::new(&index_bytes);
-                                        let mut index = HashMap::with_capacity(count as usize);
-                                        let mut parse_ok = true;
-
-                                        for _ in 0..count {
-                                            let name_len =
-                                                match cursor.read_u32::<LittleEndian>() {
-                                                    Ok(v) => v,
-                                                    Err(_) => {
-                                                        parse_ok = false;
-                                                        break;
-                                                    }
-                                                };
-                                            let mut name_bytes = vec![0u8; name_len as usize];
-                                            if cursor.read_exact(&mut name_bytes).is_err() {
-                                                parse_ok = false;
-                                                break;
-                                            }
-                                            let name_str = match String::from_utf8(name_bytes) {
-                                                Ok(v) => v,
-                                                Err(_) => {
-                                                    parse_ok = false;
-                                                    break;
-                                                }
-                                            };
-                                            let checkpoint_number = match name_str.parse::<u64>() {
-                                                Ok(v) => v,
-                                                Err(_) => {
-                                                    parse_ok = false;
-                                                    break;
-                                                }
-                                            };
-                                            let offset = match cursor.read_u64::<LittleEndian>() {
-                                                Ok(v) => v,
-                                                Err(_) => {
-                                                    parse_ok = false;
-                                                    break;
-                                                }
-                                            };
-                                            let length = match cursor.read_u64::<LittleEndian>() {
-                                                Ok(v) => v,
-                                                Err(_) => {
-                                                    parse_ok = false;
-                                                    break;
-                                                }
-                                            };
-                                            let _entry_crc =
-                                                match cursor.read_u32::<LittleEndian>() {
-                                                    Ok(v) => v,
-                                                    Err(_) => {
-                                                        parse_ok = false;
-                                                        break;
-                                                    }
-                                                };
-
-                                            index.insert(
-                                                checkpoint_number,
-                                                BlobIndexEntry {
-                                                    checkpoint_number,
-                                                    offset,
-                                                    length,
-                                                },
-                                            );
-                                        }
-
-                                        if parse_ok {
-                                            let mut cache = self.inner.index_cache.write().await;
-                                            cache.insert(blob_id.to_string(), index.clone());
-                                            return Ok(index);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            // Now read from the cached file (reuse logic from above)
+            let mut file = std::fs::File::open(&cached_path)?;
+            let file_len = file.metadata()?.len();
+            if file_len < 24 {
+                return Err(anyhow::anyhow!("downloaded blob too small"));
             }
-            // Fall through to HTTP aggregator if CLI-based index loading failed
+            file.seek(SeekFrom::Start(file_len - 24))?;
+            let magic = file.read_u32::<LittleEndian>()?;
+            if magic != 0x574c4244 {
+                return Err(anyhow::anyhow!("invalid blob footer magic"));
+            }
+            let _version = file.read_u32::<LittleEndian>()?;
+            let index_start_offset = file.read_u64::<LittleEndian>()?;
+            let count = file.read_u32::<LittleEndian>()?;
+
+            file.seek(SeekFrom::Start(index_start_offset))?;
+            let mut index_bytes = Vec::new();
+            file.read_to_end(&mut index_bytes)?;
+
+            let mut cursor = Cursor::new(&index_bytes);
+            let mut index = HashMap::with_capacity(count as usize);
+
+            for _ in 0..count {
+                let name_len = cursor.read_u32::<LittleEndian>()?;
+                let mut name_bytes = vec![0u8; name_len as usize];
+                cursor.read_exact(&mut name_bytes)?;
+                let name_str = String::from_utf8(name_bytes)?;
+                let checkpoint_number = name_str.parse::<u64>()?;
+                let offset = cursor.read_u64::<LittleEndian>()?;
+                let length = cursor.read_u64::<LittleEndian>()?;
+                let _entry_crc = cursor.read_u32::<LittleEndian>()?;
+
+                index.insert(
+                    checkpoint_number,
+                    BlobIndexEntry {
+                        checkpoint_number,
+                        offset,
+                        length,
+                    },
+                );
+            }
+
+            let mut cache = self.inner.index_cache.write().await;
+            cache.insert(blob_id.to_string(), index.clone());
+            return Ok(index);
         }
 
-        // Fallback to HTTP aggregator
+        // HTTP aggregator mode (no CLI)
         tracing::info!("fetching index for blob {} from aggregator", blob_id);
 
         let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
@@ -1731,7 +1669,7 @@ impl WalrusStorage {
             return Ok(buffer);
         }
 
-        // If caching is enabled, ensure blob is cached first (unified method)
+        // If caching is enabled (always true when CLI is configured), download and cache first
         if self.inner.cache_enabled {
             self.ensure_blob_cached(blob_id).await?;
             // Read from cached file
@@ -1743,14 +1681,7 @@ impl WalrusStorage {
             return Ok(buffer);
         }
 
-        // Streaming mode (no caching) - use CLI range reads if available
-        if self.inner.walrus_cli_path.is_some() {
-            return self
-                .read_range_via_cli_resilient(blob_id, start, length)
-                .await;
-        }
-
-        // Fallback to HTTP range requests (no caching, no CLI)
+        // HTTP aggregator mode with range requests (no caching)
         let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
         let end = start + length - 1;
 
