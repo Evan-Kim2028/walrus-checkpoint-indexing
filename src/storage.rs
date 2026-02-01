@@ -376,7 +376,8 @@ impl WalrusStorage {
             self.inner.archival_url
         );
 
-        let url = format!("{}/v1/app_blobs", self.inner.archival_url);
+        // Request all available blobs (default limit is only 50)
+        let url = format!("{}/v1/app_blobs?limit=10000", self.inner.archival_url);
         let response = self
             .inner
             .client
