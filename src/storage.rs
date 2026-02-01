@@ -1199,14 +1199,15 @@ impl WalrusStorage {
     }
 
     /// Download blob via CLI with progress bar
+    ///
+    /// Note: The Walrus CLI downloads to memory and writes the file at the end,
+    /// so we can only show elapsed time during download, not actual progress.
     async fn download_blob_via_cli_with_progress(
         &self,
         blob_id: &str,
         blob_index: usize,
         multi_progress: Option<Arc<MultiProgress>>,
     ) -> Result<PathBuf> {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-
         let cli_path = self
             .inner
             .walrus_cli_path
@@ -1233,114 +1234,68 @@ impl WalrusStorage {
         let start_time = Instant::now();
         let short_id = &blob_id[..12.min(blob_id.len())];
 
-        // Create progress bar that shows CLI's download progress
+        // Create progress bar with elapsed time
+        // Note: Walrus CLI doesn't provide progress - it downloads to memory then writes file
         let pb = if let Some(mp) = &multi_progress {
             let pb = mp.add(ProgressBar::new_spinner());
             pb.set_style(
                 ProgressStyle::default_spinner()
-                    .template("{prefix:.bold} {spinner} {msg}")
+                    .template("{prefix:.bold} {spinner} {elapsed_precise} downloading {msg}")
                     .unwrap(),
             );
             pb.set_prefix(format!("[Blob {}]", blob_index + 1));
-            pb.set_message(format!("starting {}...", short_id));
+            pb.set_message(format!("{}...", short_id));
             pb.enable_steady_tick(Duration::from_millis(100));
             Some(pb)
         } else {
             None
         };
 
-        // Spawn CLI process with stderr streaming
         let mut cmd = Command::new(cli_path);
         cmd.arg("read")
             .arg(blob_id)
             .arg("--context")
             .arg(&self.inner.walrus_cli_context)
             .arg("--out")
-            .arg(&output_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .arg(&output_path);
 
-        let mut child = cmd.spawn().context("failed to spawn walrus cli")?;
-        let stderr = child.stderr.take().expect("stderr not captured");
-        let mut reader = BufReader::new(stderr);
-        let mut line = String::new();
+        let output = self.run_cli_with_timeout(cmd).await;
 
-        // Read stderr line by line and update progress bar
-        let pb_clone = pb.clone();
-        let stderr_task = tokio::spawn(async move {
-            loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => break, // EOF
-                    Ok(_) => {
-                        let trimmed = line.trim();
-                        // Parse progress like "954.00 MiB (9.53 MiB/s)" or similar
-                        if !trimmed.is_empty() {
-                            // Look for size and speed pattern
-                            if let Some(pb) = &pb_clone {
-                                // Extract the relevant part (size and speed)
-                                if trimmed.contains("MiB") || trimmed.contains("GiB") || trimmed.contains("B/s") {
-                                    pb.set_message(trimmed.to_string());
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => break,
+        match output {
+            Ok(output) if output.status.success() => {
+                let elapsed = start_time.elapsed();
+                let size = tokio::fs::metadata(&output_path)
+                    .await
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                self.inner
+                    .bytes_downloaded
+                    .fetch_add(size, Ordering::Relaxed);
+
+                if let Some(pb) = &pb {
+                    let mb = size as f64 / 1_000_000.0;
+                    pb.finish_with_message(format!(
+                        "done ({:.1} MB, {:.1} MB/s)",
+                        mb,
+                        mb / elapsed.as_secs_f64()
+                    ));
                 }
+                Ok(output_path)
             }
-        });
-
-        // Wait for process with timeout
-        let timeout = Duration::from_secs(self.inner.walrus_cli_timeout_secs);
-        let result = tokio::time::timeout(timeout, child.wait()).await;
-        stderr_task.abort(); // Stop reading stderr
-
-        let output = match result {
-            Ok(Ok(status)) => status,
-            Ok(Err(e)) => {
+            Ok(output) => {
                 if let Some(pb) = &pb {
                     pb.abandon_with_message("failed");
                 }
-                return Err(anyhow::anyhow!("CLI error: {}", e));
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Err(anyhow::anyhow!("CLI failed: {}", stderr))
             }
-            Err(_) => {
+            Err(e) => {
                 if let Some(pb) = &pb {
-                    pb.abandon_with_message("timeout");
+                    pb.abandon_with_message("error");
                 }
-                return Err(anyhow::anyhow!(
-                    "walrus cli timed out after {}s",
-                    self.inner.walrus_cli_timeout_secs
-                ));
+                Err(e)
             }
-        };
-
-        if !output.success() {
-            if let Some(pb) = &pb {
-                pb.abandon_with_message("failed");
-            }
-            return Err(anyhow::anyhow!("CLI failed with status: {}", output));
         }
-
-        let elapsed = start_time.elapsed();
-        let size = tokio::fs::metadata(&output_path)
-            .await
-            .map(|m| m.len())
-            .unwrap_or(0);
-        self.inner
-            .bytes_downloaded
-            .fetch_add(size, Ordering::Relaxed);
-
-        if let Some(pb) = &pb {
-            let mb = size as f64 / 1_000_000.0;
-            pb.finish_with_message(format!(
-                "done ({:.1} MB, {:.1} MB/s)",
-                mb,
-                mb / elapsed.as_secs_f64()
-            ));
-        }
-
-        Ok(output_path)
     }
 
     #[allow(dead_code)]
