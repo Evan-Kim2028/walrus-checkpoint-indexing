@@ -96,10 +96,10 @@ Output schemas match the official [sui-indexer-alt](https://github.com/MystenLab
 | `packages` | Published packages |
 | `execution_errors` | Failed transaction details |
 
-### Flexible Data Access
-- **HTTP Aggregator** - No CLI needed, works anywhere
-- **Walrus CLI** - Direct access, faster and more reliable
-- **Caching modes** - Ephemeral (auto-cleanup) or persistent
+### Data Access Methods
+- **Walrus CLI (recommended)** - Direct access via official Walrus CLI, faster and more reliable
+- **HTTP Aggregator** - Fallback when CLI is not available
+- **Caching** - Downloaded blobs are cached locally for repeated access
 
 ## Examples
 

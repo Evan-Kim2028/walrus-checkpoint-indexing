@@ -1,15 +1,12 @@
-//! Configuration for Walrus checkpoint streaming.
+//! Configuration for Walrus checkpoint indexing.
 //!
-//! This module provides configuration options for connecting to Walrus storage
-//! and controlling fetch behavior.
+//! This module provides configuration options for connecting to Walrus storage.
 //!
-//! ## CLI Compatibility
+//! ## Data Access
 //!
-//! This library can work with either:
-//! - **Official Walrus CLI**: Full blob download and HTTP aggregator only
-//! - **Forked Walrus CLI**: Adds byte-range streaming with `--start-byte`, `--byte-length`, `--size-only`, `--stream`
-//!
-//! See [`CliCapabilities`] for details on which features require the forked CLI.
+//! - **Walrus CLI (recommended)**: Uses the official Walrus CLI to download blobs.
+//!   The CLI is auto-detected from PATH or can be specified explicitly.
+//! - **HTTP Aggregator**: Fallback when CLI is not available.
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -34,55 +31,25 @@ pub fn find_walrus_cli() -> Option<PathBuf> {
     None
 }
 
-/// CLI capabilities - distinguishes between official and forked Walrus CLI.
+/// CLI capabilities.
 ///
-/// ## Official Walrus CLI
-///
-/// The official Walrus CLI supports:
-/// - `walrus read <blob_id> --out <file>` - Download full blob to file
-/// - `walrus health --committee --json` - Node health information
-/// - `walrus info committee --json` - Committee/shard mapping
-///
-/// ## Forked Walrus CLI (walrus-cli-streaming)
-///
-/// The forked CLI adds these flags for byte-range streaming:
-/// - `--start-byte <N>` - Starting byte position
-/// - `--byte-length <N>` - Number of bytes to read
-/// - `--size-only` - Get blob size without downloading
-/// - `--stream` - Stream raw bytes to stdout (zero-copy)
-///
-/// ## Compatibility Matrix
-///
-/// | Feature | Official CLI | Forked CLI |
-/// |---------|-------------|------------|
-/// | Full blob download | Yes | Yes |
-/// | Node health tracking | Yes | Yes |
-/// | Sliver prediction | Yes | Yes |
-/// | Byte-range streaming | **No** | Yes |
-/// | Size-only queries | **No** | Yes |
-/// | Zero-copy streaming | **No** | Yes |
+/// **DEPRECATED**: This enum is deprecated. The library now only supports the
+/// official Walrus CLI. The `Forked` variant is kept for backwards compatibility
+/// but has no effect.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[deprecated(since = "0.2.0", note = "Forked CLI is no longer supported. Use official Walrus CLI.")]
+#[allow(deprecated)]
 pub enum CliCapabilities {
-    /// Official Walrus CLI - full blob download only.
-    ///
-    /// Use this when:
-    /// - Using the official MystenLabs/walrus binary
-    /// - You want reliable full-blob downloads
-    /// - Network has many down nodes (full download avoids problematic slivers better)
+    /// Official Walrus CLI - the only supported option.
     #[default]
     Official,
 
-    /// Forked Walrus CLI with byte-range streaming support.
-    ///
-    /// Use this when:
-    /// - Using the walrus-cli-streaming fork
-    /// - You need random access to specific checkpoints
-    /// - You want to minimize bandwidth by fetching only needed bytes
-    ///
-    /// Repository: <https://github.com/Evan-Kim2028/walrus-cli-streaming>
+    /// Deprecated: Forked CLI is no longer supported.
+    #[deprecated(since = "0.2.0", note = "Forked CLI is no longer supported")]
     Forked,
 }
 
+#[allow(deprecated)]
 impl std::str::FromStr for CliCapabilities {
     type Err = String;
 
@@ -99,52 +66,54 @@ impl std::str::FromStr for CliCapabilities {
 }
 
 /// Fetch strategy for retrieving checkpoint data from Walrus.
+///
+/// **DEPRECATED**: This enum is deprecated. The library now only uses full blob
+/// downloads. Other variants are kept for backwards compatibility but have no effect.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[deprecated(since = "0.2.0", note = "Only FullBlob strategy is supported. Other strategies are ignored.")]
+#[allow(deprecated)]
 pub enum FetchStrategy {
     /// Download full blobs, then extract checkpoints locally.
-    ///
-    /// **Works with both official and forked CLI.**
-    ///
-    /// Best for:
-    /// - Sequential access to many checkpoints
-    /// - When network has many down nodes (avoids problematic slivers)
-    /// - When you'll process most checkpoints in a blob
+    /// This is the only supported strategy.
     #[default]
     FullBlob,
 
-    /// Stream specific byte ranges on-demand.
-    ///
-    /// **Requires forked CLI with byte-range support.**
-    ///
-    /// Best for:
-    /// - Random access to specific checkpoints
-    /// - Sparse checkpoint ranges
-    /// - Minimizing bandwidth when only fetching few checkpoints
+    /// Deprecated: Byte-range streaming is no longer supported.
+    #[deprecated(since = "0.2.0", note = "ByteRangeStream is no longer supported")]
     ByteRangeStream,
 
-    /// Automatically choose strategy based on context.
-    ///
-    /// Falls back to FullBlob if forked CLI not available.
+    /// Deprecated: Adaptive strategy is no longer supported.
+    #[deprecated(since = "0.2.0", note = "Adaptive is no longer supported, FullBlob is always used")]
     Adaptive,
 }
 
+#[allow(deprecated)]
 impl std::str::FromStr for FetchStrategy {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // All strategies now map to FullBlob
         match s.to_lowercase().as_str() {
             "full" | "full-blob" | "fullblob" => Ok(FetchStrategy::FullBlob),
-            "stream" | "byte-range" | "byterange" => Ok(FetchStrategy::ByteRangeStream),
-            "adaptive" | "auto" => Ok(FetchStrategy::Adaptive),
+            "stream" | "byte-range" | "byterange" => {
+                eprintln!("Warning: ByteRangeStream is deprecated, using FullBlob");
+                Ok(FetchStrategy::FullBlob)
+            }
+            "adaptive" | "auto" => {
+                eprintln!("Warning: Adaptive is deprecated, using FullBlob");
+                Ok(FetchStrategy::FullBlob)
+            }
             _ => Err(format!("Unknown fetch strategy: {}", s)),
         }
     }
 }
 
+#[allow(deprecated)]
 impl FetchStrategy {
     /// Check if this strategy requires the forked CLI.
+    #[deprecated(since = "0.2.0", note = "Forked CLI is no longer supported")]
     pub fn requires_forked_cli(&self) -> bool {
-        matches!(self, FetchStrategy::ByteRangeStream)
+        false // No strategy requires forked CLI anymore
     }
 }
 
@@ -172,9 +141,7 @@ pub struct Config {
 
     /// Path to Walrus CLI binary
     ///
-    /// Can be either:
-    /// - Official Walrus CLI (full blob download only)
-    /// - Forked CLI with byte-range streaming support
+    /// If not specified, the CLI is auto-detected from PATH.
     #[arg(long, env = "WALRUS_CLI_PATH")]
     pub walrus_cli_path: Option<PathBuf>,
 
@@ -182,20 +149,12 @@ pub struct Config {
     #[arg(long, env = "WALRUS_CLI_CONTEXT", default_value = "mainnet")]
     pub walrus_cli_context: String,
 
-    /// CLI capabilities: "official" or "forked"
-    ///
-    /// - "official": Standard Walrus CLI (full blob download, health checks)
-    /// - "forked": walrus-cli-streaming fork (adds byte-range streaming)
-    ///
-    /// If using byte-range streaming, you MUST set this to "forked".
-    #[arg(long, env = "WALRUS_CLI_CAPABILITIES", default_value = "official")]
+    /// DEPRECATED: CLI capabilities setting (ignored)
+    #[arg(long, env = "WALRUS_CLI_CAPABILITIES", default_value = "official", hide = true)]
     pub cli_capabilities: String,
 
-    // === Fetch Strategy ===
-    /// Fetch strategy: full-blob, byte-range, or adaptive
-    ///
-    /// Note: "byte-range" requires cli_capabilities="forked"
-    #[arg(long, env = "WALRUS_FETCH_STRATEGY", default_value = "full-blob")]
+    /// DEPRECATED: Fetch strategy setting (ignored, always uses full-blob)
+    #[arg(long, env = "WALRUS_FETCH_STRATEGY", default_value = "full-blob", hide = true)]
     pub fetch_strategy: String,
 
     // === Caching ===
@@ -263,11 +222,13 @@ impl Config {
     }
 
     /// Get the parsed fetch strategy.
+    #[allow(deprecated)]
     pub fn fetch_strategy(&self) -> FetchStrategy {
         self.fetch_strategy.parse().unwrap_or_default()
     }
 
     /// Get the CLI capabilities.
+    #[allow(deprecated)]
     pub fn cli_capabilities(&self) -> CliCapabilities {
         self.cli_capabilities.parse().unwrap_or_default()
     }
@@ -284,41 +245,21 @@ impl Config {
     }
 
     /// Check if byte-range streaming is available.
-    ///
-    /// Requires both:
-    /// - CLI path available (explicit or auto-detected)
-    /// - CLI capabilities set to "forked"
+    #[deprecated(since = "0.2.0", note = "Byte-range streaming is no longer supported")]
     pub fn byte_range_streaming_available(&self) -> bool {
-        self.resolved_cli_path().is_some() && self.cli_capabilities() == CliCapabilities::Forked
+        false
     }
 
     /// Validate that config is consistent.
-    ///
-    /// Returns error if byte-range strategy is selected but forked CLI not configured.
     pub fn validate(&self) -> anyhow::Result<()> {
-        let strategy = self.fetch_strategy();
-        let capabilities = self.cli_capabilities();
-
-        if strategy.requires_forked_cli() && capabilities != CliCapabilities::Forked {
-            return Err(anyhow::anyhow!(
-                "Fetch strategy '{:?}' requires forked CLI. Set --cli-capabilities=forked or use --fetch-strategy=full-blob",
-                strategy
-            ));
-        }
-
-        if strategy.requires_forked_cli() && self.walrus_cli_path.is_none() {
-            return Err(anyhow::anyhow!(
-                "Fetch strategy '{:?}' requires --walrus-cli-path to be set",
-                strategy
-            ));
-        }
-
+        // All configurations are now valid - we only use full blob downloads
         Ok(())
     }
 }
 
 /// Builder for Config.
 #[derive(Default)]
+#[allow(deprecated)]
 pub struct ConfigBuilder {
     archival_url: Option<String>,
     aggregator_url: Option<String>,
@@ -361,20 +302,22 @@ impl ConfigBuilder {
         self
     }
 
-    /// Set CLI capabilities (official or forked).
-    ///
-    /// Use `CliCapabilities::Forked` if using the walrus-cli-streaming fork
-    /// with byte-range support.
+    /// Set CLI capabilities.
+    #[deprecated(since = "0.2.0", note = "Forked CLI is no longer supported. This setting is ignored.")]
+    #[allow(deprecated)]
     pub fn cli_capabilities(mut self, capabilities: CliCapabilities) -> Self {
         self.cli_capabilities = Some(capabilities);
         self
     }
 
+    /// Set fetch strategy.
+    #[deprecated(since = "0.2.0", note = "Only FullBlob strategy is supported. This setting is ignored.")]
+    #[allow(deprecated)]
     pub fn fetch_strategy(mut self, strategy: FetchStrategy) -> Self {
         self.fetch_strategy = Some(match strategy {
             FetchStrategy::FullBlob => "full-blob".to_string(),
-            FetchStrategy::ByteRangeStream => "byte-range".to_string(),
-            FetchStrategy::Adaptive => "adaptive".to_string(),
+            FetchStrategy::ByteRangeStream => "full-blob".to_string(), // Ignore, use FullBlob
+            FetchStrategy::Adaptive => "full-blob".to_string(), // Ignore, use FullBlob
         });
         self
     }
@@ -399,6 +342,7 @@ impl ConfigBuilder {
         self
     }
 
+    #[allow(deprecated)]
     pub fn build(self) -> anyhow::Result<Config> {
         let cli_capabilities_str = match self.cli_capabilities.unwrap_or_default() {
             CliCapabilities::Official => "official".to_string(),

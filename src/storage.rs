@@ -1,11 +1,14 @@
 //! Core Walrus checkpoint storage and retrieval.
 //!
-//! This module provides the main `WalrusStorage` type for streaming Sui checkpoints
-//! from Walrus decentralized storage. It supports multiple fetch strategies:
+//! This module provides the main `WalrusStorage` type for fetching Sui checkpoints
+//! from Walrus decentralized storage.
 //!
-//! - **Full blob download**: Download entire blobs (2-3 GB each) for maximum throughput
-//! - **Byte-range streaming**: Stream specific byte ranges using forked CLI
-//! - **Adaptive fetching**: Automatically choose strategy based on network health
+//! ## Data Access
+//!
+//! - **Walrus CLI**: Downloads full blobs (~3 GB each) via the official Walrus CLI
+//! - **HTTP Aggregator**: Fallback when CLI is not available
+//!
+//! When using the CLI, blobs are downloaded in full and cached locally.
 //!
 //! ## Architecture
 //!
@@ -14,8 +17,8 @@
 //! │                    WalrusStorage                             │
 //! │                                                              │
 //! │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-//! │  │   Metadata   │  │   Index      │  │   Range      │       │
-//! │  │   Service    │  │   Cache      │  │   Fetcher    │       │
+//! │  │   Metadata   │  │   Index      │  │   Blob       │       │
+//! │  │   Service    │  │   Cache      │  │   Cache      │       │
 //! │  └──────────────┘  └──────────────┘  └──────────────┘       │
 //! │         │                 │                 │                │
 //! │         └─────────────────┼─────────────────┘                │
