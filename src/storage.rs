@@ -1231,40 +1231,21 @@ impl WalrusStorage {
         let start_time = Instant::now();
         let short_id = &blob_id[..12.min(blob_id.len())];
 
-        // Create progress bar that monitors file size during download
+        // Create progress bar with elapsed time (CLI downloads to memory first, then writes file)
         let pb = if let Some(mp) = &multi_progress {
             let pb = mp.add(ProgressBar::new_spinner());
             pb.set_style(
                 ProgressStyle::default_spinner()
-                    .template("{prefix:.bold} {spinner} {bytes} ({bytes_per_sec}) {msg}")
+                    .template("{prefix:.bold} {spinner} {elapsed_precise} {msg}")
                     .unwrap(),
             );
             pb.set_prefix(format!("[Blob {}]", blob_index + 1));
-            pb.set_message(format!("{}...", short_id));
+            pb.set_message(format!("downloading {}...", short_id));
             pb.enable_steady_tick(Duration::from_millis(100));
             Some(pb)
         } else {
             None
         };
-
-        // Spawn a task to monitor file size and update progress
-        let monitor_path = output_path.clone();
-        let monitor_pb = pb.clone();
-        let monitor_handle = tokio::spawn(async move {
-            let mut last_size = 0u64;
-            loop {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                if let Ok(metadata) = tokio::fs::metadata(&monitor_path).await {
-                    let size = metadata.len();
-                    if size != last_size {
-                        if let Some(ref pb) = monitor_pb {
-                            pb.set_position(size);
-                        }
-                        last_size = size;
-                    }
-                }
-            }
-        });
 
         let mut cmd = Command::new(cli_path);
         cmd.arg("read")
@@ -1275,7 +1256,6 @@ impl WalrusStorage {
             .arg(&output_path);
 
         let output = self.run_cli_with_timeout(cmd).await;
-        monitor_handle.abort(); // Stop the file size monitor
 
         match output {
             Ok(output) if output.status.success() => {
