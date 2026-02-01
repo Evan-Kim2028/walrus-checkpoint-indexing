@@ -407,9 +407,11 @@ impl WalrusStorage {
             .unwrap_or(0);
         let max_end = metadata.iter().map(|b| b.end_checkpoint).max().unwrap_or(0);
 
+        let total_checkpoints = max_end.saturating_sub(min_start);
         tracing::info!(
-            "fetched {} Walrus blobs covering checkpoints {}..{}",
+            "archival index: {} blobs available ({} checkpoints, range {}..{})",
             metadata.len(),
+            total_checkpoints,
             min_start,
             max_end
         );

@@ -1989,9 +1989,16 @@ async fn main() -> Result<()> {
     // Parallel blob prefetching if enabled
     if args.parallel_prefetch {
         let blobs = storage.get_blobs_for_range(args.start..args.end).await;
+        let checkpoints_requested = args.end.saturating_sub(args.start);
         println!(
-            "Prefetching {} blobs in parallel (concurrency: {})...",
+            "Downloading {} blobs for {} checkpoints (range {}..{})",
             blobs.len(),
+            checkpoints_requested,
+            args.start,
+            args.end
+        );
+        println!(
+            "Prefetching in parallel (concurrency: {})...",
             args.prefetch_concurrency
         );
         let blob_ids: Vec<String> = blobs.iter().map(|b| b.blob_id.clone()).collect();
