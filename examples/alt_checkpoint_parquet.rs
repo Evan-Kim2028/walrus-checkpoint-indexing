@@ -5,18 +5,16 @@
 //! ## Quick Start
 //!
 //! ```bash
-//! # Minimal test (1,000 checkpoints, ~30 seconds)
+//! # Minimal test (1,000 checkpoints)
 //! cargo run --release --example alt_checkpoint_parquet --features duckdb -- \
 //!   --start 239000000 --end 239001000 \
-//!   --output-dir ./parquet_output \
-//!   --duckdb-summary
+//!   --output-dir ./parquet_output
 //!
 //! # Medium run with blob caching (10,000 checkpoints)
 //! cargo run --release --example alt_checkpoint_parquet --features duckdb -- \
 //!   --start 239000000 --end 239010000 \
 //!   --output-dir ./parquet_output \
-//!   --cache-enabled \
-//!   --duckdb-summary
+//!   --cache-enabled
 //!
 //! # Large run with parallel blob prefetching and progress bars
 //! cargo run --release --example alt_checkpoint_parquet --features duckdb -- \
@@ -25,8 +23,7 @@
 //!   --cache-enabled \
 //!   --parallel-prefetch \
 //!   --prefetch-concurrency 4 \
-//!   --show-progress \
-//!   --duckdb-summary
+//!   --show-progress
 //! ```
 //!
 //! ## Command Line Options
@@ -41,7 +38,6 @@
 //! | `--prefetch-concurrency` | Number of parallel blob downloads | 4 |
 //! | `--show-progress` | Show download progress bars | false |
 //! | `--spool-mode` | `ephemeral` (temp) or `cache` (persistent) | `ephemeral` |
-//! | `--duckdb-summary` | Print data summary after indexing | false |
 //!
 //! ## Output Tables (10 total)
 //!
@@ -164,10 +160,6 @@ struct Args {
     /// Reset watermark file if it exists
     #[arg(long)]
     reset_watermark: bool,
-
-    /// Print DuckDB summary after writing parquet
-    #[arg(long)]
-    duckdb_summary: bool,
 
     /// Enable parallel blob prefetching before processing
     #[arg(long)]
@@ -1911,37 +1903,67 @@ fn parse_package(package: &Option<String>) -> Result<Option<ObjectID>> {
     }
 }
 
+/// Table metadata for output summary
+struct TableInfo {
+    name: &'static str,
+    description: &'static str,
+}
+
+const OUTPUT_TABLES: &[TableInfo] = &[
+    TableInfo { name: "checkpoints", description: "Checkpoint metadata (epoch, gas totals)" },
+    TableInfo { name: "transactions", description: "Transaction metadata (sender, gas, status)" },
+    TableInfo { name: "events", description: "Emitted events (package, module, type, bcs)" },
+    TableInfo { name: "move_calls", description: "Function calls (package, module, function)" },
+    TableInfo { name: "objects", description: "Object changes (created/mutated/deleted)" },
+    TableInfo { name: "input_objects", description: "Pre-transaction object state" },
+    TableInfo { name: "output_objects", description: "Post-transaction object state" },
+    TableInfo { name: "balance_changes", description: "Coin balance changes (+/- amounts)" },
+    TableInfo { name: "packages", description: "Published packages" },
+    TableInfo { name: "execution_errors", description: "Failed transaction errors" },
+];
+
 #[cfg(feature = "duckdb")]
-fn duckdb_summary(output_dir: &Path) -> Result<()> {
+fn output_summary(output_dir: &Path) -> Result<()> {
     let conn = duckdb::Connection::open_in_memory()
         .context("failed to open in-memory DuckDB connection")?;
 
-    let tables = [
-        "events",
-        "transactions",
-        "move_calls",
-        "objects",
-        "checkpoints",
-        "packages",
-        "input_objects",
-        "output_objects",
-        "balance_changes",
-        "execution_errors",
-    ];
+    eprintln!("\n=== Output Summary ===");
+    eprintln!("Directory: {}", output_dir.display());
+    eprintln!();
+    eprintln!("{:<20} {:>12} {:>10}  {}", "Table", "Rows", "Size", "Description");
+    eprintln!("{}", "-".repeat(80));
 
-    eprintln!("\n=== DuckDB Summary ===\n");
-
-    for table in tables {
-        let path = output_dir.join(format!("{}.parquet", table));
+    for table in OUTPUT_TABLES {
+        let path = output_dir.join(format!("{}.parquet", table.name));
         if path.exists() {
+            let size_kb = path.metadata().map(|m| m.len() as f64 / 1024.0).unwrap_or(0.0);
+            let size_str = if size_kb >= 1024.0 {
+                format!("{:.1} MB", size_kb / 1024.0)
+            } else {
+                format!("{:.1} KB", size_kb)
+            };
+
             let path_str = path.to_str().unwrap().replace('\'', "''");
             let count_query = format!("SELECT COUNT(*) FROM read_parquet('{}')", path_str);
             match conn.query_row(&count_query, [], |row| row.get::<_, i64>(0)) {
-                Ok(count) => eprintln!("{}: {} rows", table, count),
-                Err(e) => eprintln!("{}: error - {}", table, e),
+                Ok(count) => {
+                    eprintln!(
+                        "{:<20} {:>12} {:>10}  {}",
+                        table.name, format_count(count), size_str, table.description
+                    );
+                }
+                Err(_) => {
+                    eprintln!(
+                        "{:<20} {:>12} {:>10}  {}",
+                        table.name, "error", size_str, table.description
+                    );
+                }
             }
         } else {
-            eprintln!("{}: (no data)", table);
+            eprintln!(
+                "{:<20} {:>12} {:>10}  {}",
+                table.name, "-", "-", table.description
+            );
         }
     }
 
@@ -1949,8 +1971,41 @@ fn duckdb_summary(output_dir: &Path) -> Result<()> {
 }
 
 #[cfg(not(feature = "duckdb"))]
-fn duckdb_summary(_output_dir: &Path) -> Result<()> {
-    anyhow::bail!("duckdb feature not enabled; rebuild with --features duckdb")
+fn output_summary(output_dir: &Path) -> Result<()> {
+    eprintln!("\n=== Output Summary ===");
+    eprintln!("Directory: {}", output_dir.display());
+    eprintln!();
+    eprintln!("{:<20} {:>10}  {}", "Table", "Size", "Description");
+    eprintln!("{}", "-".repeat(70));
+
+    for table in OUTPUT_TABLES {
+        let path = output_dir.join(format!("{}.parquet", table.name));
+        if path.exists() {
+            let size_kb = path.metadata().map(|m| m.len() as f64 / 1024.0).unwrap_or(0.0);
+            let size_str = if size_kb >= 1024.0 {
+                format!("{:.1} MB", size_kb / 1024.0)
+            } else {
+                format!("{:.1} KB", size_kb)
+            };
+            eprintln!("{:<20} {:>10}  {}", table.name, size_str, table.description);
+        } else {
+            eprintln!("{:<20} {:>10}  {}", table.name, "-", table.description);
+        }
+    }
+
+    eprintln!();
+    eprintln!("(Row counts available with --features duckdb)");
+    Ok(())
+}
+
+fn format_count(count: i64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{:.1}K", count as f64 / 1_000.0)
+    } else {
+        count.to_string()
+    }
 }
 
 #[tokio::main]
@@ -2106,18 +2161,7 @@ async fn main() -> Result<()> {
 
     sink.close_all().await?;
 
-    eprintln!("\n=== Output Files ===");
-    eprintln!("Directory: {}", args.output_dir.display());
-    for entry in std::fs::read_dir(&args.output_dir)? {
-        let entry = entry?;
-        let metadata = entry.metadata()?;
-        let size_kb = metadata.len() as f64 / 1024.0;
-        eprintln!("  {} ({:.1} KB)", entry.file_name().to_string_lossy(), size_kb);
-    }
-
-    if args.duckdb_summary {
-        duckdb_summary(&args.output_dir)?;
-    }
+    output_summary(&args.output_dir)?;
 
     Ok(())
 }
