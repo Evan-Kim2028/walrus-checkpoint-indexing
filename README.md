@@ -26,7 +26,7 @@ Sui checkpoint data is archived on Walrus decentralized storage. This project br
 ```
 
 This library:
-1. Downloads checkpoint blobs from [Walrus archival service](https://walrus-sui-archival.mainnet.walrus.space)
+1. Downloads checkpoint blobs from the Walrus archival service
 2. Extracts and spools checkpoints in `.chk` format (same as Sui full nodes)
 3. Feeds them to [sui-indexer-alt-framework](https://github.com/MystenLabs/sui/tree/main/crates/sui-indexer-alt-framework) for processing
 4. Outputs 10 Parquet tables matching the official indexer schemas
@@ -284,7 +284,6 @@ async fn main() -> anyhow::Result<()> {
 
 - [Walrus](https://walrus.xyz) - Decentralized storage for Sui
 - [sui-indexer-alt](https://github.com/MystenLabs/sui/tree/main/crates/sui-indexer-alt) - Official Sui indexer
-- [deepbookv3-walrus-streaming](https://github.com/Evan-Kim2028/deepbookv3-walrus-streaming) - DeepBook indexer using this library
 
 ## License
 
