@@ -176,8 +176,8 @@ pub struct Config {
     pub range_concurrency: usize,
 
     // === Timeouts & Retries ===
-    /// Timeout for CLI operations in seconds
-    #[arg(long, env = "WALRUS_CLI_TIMEOUT_SECS", default_value = "180")]
+    /// Timeout for CLI operations in seconds (blobs are ~3GB, need time to download)
+    #[arg(long, env = "WALRUS_CLI_TIMEOUT_SECS", default_value = "600")]
     pub cli_timeout_secs: u64,
 
     /// HTTP timeout in seconds
@@ -368,7 +368,7 @@ impl ConfigBuilder {
             cache_enabled: self.cache_enabled.unwrap_or(false),
             blob_concurrency: self.blob_concurrency.unwrap_or(4),
             range_concurrency: self.range_concurrency.unwrap_or(32),
-            cli_timeout_secs: self.cli_timeout_secs.unwrap_or(180),
+            cli_timeout_secs: self.cli_timeout_secs.unwrap_or(600),
             http_timeout_secs: self.http_timeout_secs.unwrap_or(60),
             max_retries: self.max_retries.unwrap_or(6),
             retry_delay_secs: self.retry_delay_secs.unwrap_or(5),
