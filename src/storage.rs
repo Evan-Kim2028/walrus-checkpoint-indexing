@@ -1406,6 +1406,7 @@ impl WalrusStorage {
     }
 
     async fn blob_size_via_cli(&self, blob_id: &str) -> Result<u64> {
+        // Check cache first
         {
             let cache = self.inner.blob_size_cache.read().await;
             if let Some(size) = cache.get(blob_id) {
@@ -1413,73 +1414,21 @@ impl WalrusStorage {
             }
         }
 
-        let cli_path = self
-            .inner
-            .walrus_cli_path
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Walrus CLI path not configured"))?;
-
-        let mut stdout = String::new();
-        let mut last_err: Option<anyhow::Error> = None;
-        for attempt in 1..=3 {
-            let mut cmd = Command::new(cli_path);
-            cmd.arg("read")
-                .arg(blob_id)
-                .arg("--context")
-                .arg(&self.inner.walrus_cli_context)
-                .arg("--size-only")
-                .arg("--json");
-
-            let output = self.run_cli_with_timeout(cmd).await?;
-
-            if output.status.success() {
-                stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                last_err = None;
-                break;
-            }
-
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            last_err = Some(anyhow::anyhow!(
-                "walrus cli size-only failed with status {}: {}",
-                output.status,
-                stderr.trim()
-            ));
-            tracing::warn!("walrus cli size-only failed (attempt {}/3)", attempt);
-            tokio::time::sleep(Duration::from_secs(2)).await;
+        // Check if we have the blob cached locally - can get size from file
+        let cached_path = self.get_cached_blob_path(blob_id);
+        if cached_path.exists() {
+            let metadata = tokio::fs::metadata(&cached_path).await?;
+            let size = metadata.len();
+            let mut cache = self.inner.blob_size_cache.write().await;
+            cache.insert(blob_id.to_string(), size);
+            return Ok(size);
         }
 
-        if let Some(err) = last_err {
-            return Err(err);
-        }
-
-        let trimmed = stdout.trim();
-        let mut size: Option<u64> = None;
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            if let Some(s) = val.get("size").and_then(|v| v.as_u64()) {
-                size = Some(s);
-            } else if let Some(s) = val.get("blobSize").and_then(|v| v.as_u64()) {
-                size = Some(s);
-            } else if let Some(s) = val.get("blob_size").and_then(|v| v.as_u64()) {
-                size = Some(s);
-            } else if let Some(s) = val.get("unencoded_size").and_then(|v| v.as_u64()) {
-                size = Some(s);
-            } else if let Some(s) = val.as_u64() {
-                size = Some(s);
-            }
-        } else if let Ok(s) = trimmed.parse::<u64>() {
-            size = Some(s);
-        }
-
-        let size = size.ok_or_else(|| {
-            anyhow::anyhow!(
-                "unable to parse blob size from walrus cli output: {}",
-                trimmed
-            )
-        })?;
-
-        let mut cache = self.inner.blob_size_cache.write().await;
-        cache.insert(blob_id.to_string(), size);
-        Ok(size)
+        // Standard Walrus CLI doesn't support getting blob size without downloading
+        // Return error to trigger fallback to HTTP aggregator for index loading
+        Err(anyhow::anyhow!(
+            "blob size not available (blob not cached locally)"
+        ))
     }
 
     async fn load_blob_index(&self, blob_id: &str) -> Result<HashMap<u64, BlobIndexEntry>> {
@@ -1542,76 +1491,111 @@ impl WalrusStorage {
             return Ok(index);
         }
 
-        // If CLI is configured, read footer + index via range reads
+        // If CLI is configured and blob is cached locally, read footer + index via range reads
         if self.inner.walrus_cli_path.is_some() {
-            let total_size = self.blob_size_via_cli(blob_id).await?;
+            if let Ok(total_size) = self.blob_size_via_cli(blob_id).await {
+                if total_size >= 24 {
+                    let footer_start = total_size - 24;
+                    if let Ok(footer_bytes) = self
+                        .read_range_via_cli_resilient(blob_id, footer_start, 24)
+                        .await
+                    {
+                        if footer_bytes.len() == 24 {
+                            let mut cursor = Cursor::new(&footer_bytes);
+                            let magic = cursor.read_u32::<LittleEndian>()?;
+                            if magic == 0x574c4244 {
+                                let _version = cursor.read_u32::<LittleEndian>()?;
+                                let index_start_offset = cursor.read_u64::<LittleEndian>()?;
+                                let count = cursor.read_u32::<LittleEndian>()?;
 
-            if total_size < 24 {
-                return Err(anyhow::anyhow!("blob {} is too small", blob_id));
+                                if index_start_offset < total_size {
+                                    let index_len = total_size - index_start_offset;
+                                    if let Ok(index_bytes) = self
+                                        .read_range_via_cli_resilient(
+                                            blob_id,
+                                            index_start_offset,
+                                            index_len,
+                                        )
+                                        .await
+                                    {
+                                        let mut cursor = Cursor::new(&index_bytes);
+                                        let mut index = HashMap::with_capacity(count as usize);
+                                        let mut parse_ok = true;
+
+                                        for _ in 0..count {
+                                            let name_len =
+                                                match cursor.read_u32::<LittleEndian>() {
+                                                    Ok(v) => v,
+                                                    Err(_) => {
+                                                        parse_ok = false;
+                                                        break;
+                                                    }
+                                                };
+                                            let mut name_bytes = vec![0u8; name_len as usize];
+                                            if cursor.read_exact(&mut name_bytes).is_err() {
+                                                parse_ok = false;
+                                                break;
+                                            }
+                                            let name_str = match String::from_utf8(name_bytes) {
+                                                Ok(v) => v,
+                                                Err(_) => {
+                                                    parse_ok = false;
+                                                    break;
+                                                }
+                                            };
+                                            let checkpoint_number = match name_str.parse::<u64>() {
+                                                Ok(v) => v,
+                                                Err(_) => {
+                                                    parse_ok = false;
+                                                    break;
+                                                }
+                                            };
+                                            let offset = match cursor.read_u64::<LittleEndian>() {
+                                                Ok(v) => v,
+                                                Err(_) => {
+                                                    parse_ok = false;
+                                                    break;
+                                                }
+                                            };
+                                            let length = match cursor.read_u64::<LittleEndian>() {
+                                                Ok(v) => v,
+                                                Err(_) => {
+                                                    parse_ok = false;
+                                                    break;
+                                                }
+                                            };
+                                            let _entry_crc =
+                                                match cursor.read_u32::<LittleEndian>() {
+                                                    Ok(v) => v,
+                                                    Err(_) => {
+                                                        parse_ok = false;
+                                                        break;
+                                                    }
+                                                };
+
+                                            index.insert(
+                                                checkpoint_number,
+                                                BlobIndexEntry {
+                                                    checkpoint_number,
+                                                    offset,
+                                                    length,
+                                                },
+                                            );
+                                        }
+
+                                        if parse_ok {
+                                            let mut cache = self.inner.index_cache.write().await;
+                                            cache.insert(blob_id.to_string(), index.clone());
+                                            return Ok(index);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-
-            let footer_start = total_size - 24;
-            let footer_bytes = self
-                .read_range_via_cli_resilient(blob_id, footer_start, 24)
-                .await?;
-
-            if footer_bytes.len() != 24 {
-                return Err(anyhow::anyhow!(
-                    "invalid footer length for blob {}: {}",
-                    blob_id,
-                    footer_bytes.len()
-                ));
-            }
-
-            let mut cursor = Cursor::new(&footer_bytes);
-            let magic = cursor.read_u32::<LittleEndian>()?;
-            if magic != 0x574c4244 {
-                return Err(anyhow::anyhow!("invalid blob footer magic: {:x}", magic));
-            }
-
-            let _version = cursor.read_u32::<LittleEndian>()?;
-            let index_start_offset = cursor.read_u64::<LittleEndian>()?;
-            let count = cursor.read_u32::<LittleEndian>()?;
-
-            if index_start_offset >= total_size {
-                return Err(anyhow::anyhow!(
-                    "invalid index start offset {} for blob size {}",
-                    index_start_offset,
-                    total_size
-                ));
-            }
-
-            let index_len = total_size - index_start_offset;
-            let index_bytes = self
-                .read_range_via_cli_resilient(blob_id, index_start_offset, index_len)
-                .await?;
-
-            let mut cursor = Cursor::new(&index_bytes);
-            let mut index = HashMap::with_capacity(count as usize);
-
-            for _ in 0..count {
-                let name_len = cursor.read_u32::<LittleEndian>()?;
-                let mut name_bytes = vec![0u8; name_len as usize];
-                cursor.read_exact(&mut name_bytes)?;
-                let name_str = String::from_utf8(name_bytes)?;
-                let checkpoint_number = name_str.parse::<u64>()?;
-                let offset = cursor.read_u64::<LittleEndian>()?;
-                let length = cursor.read_u64::<LittleEndian>()?;
-                let _entry_crc = cursor.read_u32::<LittleEndian>()?;
-
-                index.insert(
-                    checkpoint_number,
-                    BlobIndexEntry {
-                        checkpoint_number,
-                        offset,
-                        length,
-                    },
-                );
-            }
-
-            let mut cache = self.inner.index_cache.write().await;
-            cache.insert(blob_id.to_string(), index.clone());
-            return Ok(index);
+            // Fall through to HTTP aggregator if CLI-based index loading failed
         }
 
         // Fallback to HTTP aggregator
