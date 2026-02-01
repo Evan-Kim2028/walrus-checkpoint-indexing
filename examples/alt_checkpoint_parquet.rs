@@ -1990,17 +1990,21 @@ async fn main() -> Result<()> {
     if args.parallel_prefetch {
         let blobs = storage.get_blobs_for_range(args.start..args.end).await;
         let checkpoints_requested = args.end.saturating_sub(args.start);
-        eprintln!(
-            "Downloading {} blobs for {} checkpoints (range {}..{})",
-            blobs.len(),
-            checkpoints_requested,
-            args.start,
-            args.end
-        );
-        eprintln!(
-            "Prefetching in parallel (concurrency: {})...",
-            args.prefetch_concurrency
-        );
+        let num_blobs = blobs.len();
+
+        // Calculate total size from blob metadata
+        let total_bytes: u64 = blobs.iter().map(|b| b.total_size).sum();
+        let total_gb = total_bytes as f64 / 1_000_000_000.0;
+
+        eprintln!();
+        eprintln!("=== Blob Download ===");
+        eprintln!("Checkpoints: {} (range {}..{})", checkpoints_requested, args.start, args.end);
+        eprintln!("Blobs to download: {}", num_blobs);
+        eprintln!("Total download size: {:.2} GB", total_gb);
+        eprintln!("Concurrency: {} parallel downloads", args.prefetch_concurrency);
+        eprintln!("Timeout: {} seconds per blob", args.walrus.cli_timeout_secs);
+        eprintln!();
+
         let blob_ids: Vec<String> = blobs.iter().map(|b| b.blob_id.clone()).collect();
         let prefetch_start = std::time::Instant::now();
         let prefetched = storage
@@ -2011,12 +2015,16 @@ async fn main() -> Result<()> {
             )
             .await?;
         let prefetch_elapsed = prefetch_start.elapsed();
-        eprintln!(
-            "Prefetched {}/{} blobs in {:.2}s",
-            prefetched,
-            blobs.len(),
-            prefetch_elapsed.as_secs_f64()
-        );
+
+        let downloaded_bytes = storage.bytes_downloaded();
+        let downloaded_gb = downloaded_bytes as f64 / 1_000_000_000.0;
+        let speed_mbps = (downloaded_bytes as f64 / 1_000_000.0) / prefetch_elapsed.as_secs_f64();
+
+        eprintln!();
+        eprintln!("=== Download Complete ===");
+        eprintln!("Downloaded: {}/{} blobs ({:.2} GB)", prefetched, num_blobs, downloaded_gb);
+        eprintln!("Time: {:.1}s ({:.1} MB/s average)", prefetch_elapsed.as_secs_f64(), speed_mbps);
+        eprintln!();
     }
 
     spool_checkpoints(&storage, args.start..args.end, &spool).await?;
