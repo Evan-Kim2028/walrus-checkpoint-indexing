@@ -2122,6 +2122,17 @@ async fn main() -> Result<()> {
     validate_spool_file(&first_path)?;
     validate_spool_file(&last_path)?;
 
+    let num_checkpoints = args.end.saturating_sub(args.start);
+    eprintln!();
+    eprintln!("=== Processing Checkpoints ===");
+    eprintln!("Checkpoints to process: {} ({}..{})", num_checkpoints, args.start, args.end);
+    eprintln!("Output directory: {}", args.output_dir.display());
+    eprintln!();
+    eprintln!("Processing with sui-indexer-alt-framework...");
+    eprintln!("(this may take a while for large ranges)");
+
+    let process_start = std::time::Instant::now();
+
     let package_filter = parse_package(&args.package)?;
     let sink = Arc::new(MultiParquetSink::new(args.output_dir.clone())?);
     let pipeline = ComprehensivePipeline {
@@ -2160,6 +2171,16 @@ async fn main() -> Result<()> {
     service.join().await?;
 
     sink.close_all().await?;
+
+    let process_elapsed = process_start.elapsed();
+    let checkpoints_per_sec = num_checkpoints as f64 / process_elapsed.as_secs_f64();
+    eprintln!();
+    eprintln!(
+        "Processing complete: {} checkpoints in {:.1}s ({:.0} checkpoints/sec)",
+        num_checkpoints,
+        process_elapsed.as_secs_f64(),
+        checkpoints_per_sec
+    );
 
     output_summary(&args.output_dir)?;
 
