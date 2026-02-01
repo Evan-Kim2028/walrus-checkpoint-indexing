@@ -1817,7 +1817,7 @@ async fn spool_checkpoints(
         })
         .await?;
 
-    println!(
+    eprintln!(
         "Spool complete: {} written, {} skipped (dir: {})",
         written.load(Ordering::Relaxed),
         skipped.load(Ordering::Relaxed),
@@ -1929,7 +1929,7 @@ fn duckdb_summary(output_dir: &Path) -> Result<()> {
         "execution_errors",
     ];
 
-    println!("\n=== DuckDB Summary ===\n");
+    eprintln!("\n=== DuckDB Summary ===\n");
 
     for table in tables {
         let path = output_dir.join(format!("{}.parquet", table));
@@ -1937,11 +1937,11 @@ fn duckdb_summary(output_dir: &Path) -> Result<()> {
             let path_str = path.to_str().unwrap().replace('\'', "''");
             let count_query = format!("SELECT COUNT(*) FROM read_parquet('{}')", path_str);
             match conn.query_row(&count_query, [], |row| row.get::<_, i64>(0)) {
-                Ok(count) => println!("{}: {} rows", table, count),
-                Err(e) => println!("{}: error - {}", table, e),
+                Ok(count) => eprintln!("{}: {} rows", table, count),
+                Err(e) => eprintln!("{}: error - {}", table, e),
             }
         } else {
-            println!("{}: (no data)", table);
+            eprintln!("{}: (no data)", table);
         }
     }
 
@@ -1981,7 +1981,7 @@ async fn main() -> Result<()> {
     }
 
     let spool = SpoolHandle::new(args.spool_mode, args.spool_dir.clone())?;
-    println!("Spooling checkpoints to: {}", spool.dir.display());
+    eprintln!("Spooling checkpoints to: {}", spool.dir.display());
 
     let storage = WalrusStorage::new(args.walrus.clone()).await?;
     storage.initialize().await?;
@@ -1990,14 +1990,14 @@ async fn main() -> Result<()> {
     if args.parallel_prefetch {
         let blobs = storage.get_blobs_for_range(args.start..args.end).await;
         let checkpoints_requested = args.end.saturating_sub(args.start);
-        println!(
+        eprintln!(
             "Downloading {} blobs for {} checkpoints (range {}..{})",
             blobs.len(),
             checkpoints_requested,
             args.start,
             args.end
         );
-        println!(
+        eprintln!(
             "Prefetching in parallel (concurrency: {})...",
             args.prefetch_concurrency
         );
@@ -2011,7 +2011,7 @@ async fn main() -> Result<()> {
             )
             .await?;
         let prefetch_elapsed = prefetch_start.elapsed();
-        println!(
+        eprintln!(
             "Prefetched {}/{} blobs in {:.2}s",
             prefetched,
             blobs.len(),
@@ -2065,13 +2065,13 @@ async fn main() -> Result<()> {
 
     sink.close_all().await?;
 
-    println!("\n=== Output Files ===");
-    println!("Directory: {}", args.output_dir.display());
+    eprintln!("\n=== Output Files ===");
+    eprintln!("Directory: {}", args.output_dir.display());
     for entry in std::fs::read_dir(&args.output_dir)? {
         let entry = entry?;
         let metadata = entry.metadata()?;
         let size_kb = metadata.len() as f64 / 1024.0;
-        println!("  {} ({:.1} KB)", entry.file_name().to_string_lossy(), size_kb);
+        eprintln!("  {} ({:.1} KB)", entry.file_name().to_string_lossy(), size_kb);
     }
 
     if args.duckdb_summary {
