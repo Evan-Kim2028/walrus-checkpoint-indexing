@@ -1,14 +1,11 @@
 //! Core Walrus checkpoint storage and retrieval.
 //!
-//! This module provides the main `WalrusStorage` type for fetching Sui checkpoints
-//! from Walrus decentralized storage.
+//! This module provides the main `WalrusStorage` type for streaming Sui checkpoints
+//! from Walrus decentralized storage. It supports multiple fetch strategies:
 //!
-//! ## Data Access
-//!
-//! - **Walrus CLI**: Downloads full blobs (~3 GB each) via the official Walrus CLI
-//! - **HTTP Aggregator**: Fallback when CLI is not available
-//!
-//! When using the CLI, blobs are downloaded in full and cached locally.
+//! - **Full blob download**: Download entire blobs (2-3 GB each) for maximum throughput
+//! - **Byte-range streaming**: Stream specific byte ranges using forked CLI
+//! - **Adaptive fetching**: Automatically choose strategy based on network health
 //!
 //! ## Architecture
 //!
@@ -17,8 +14,8 @@
 //! │                    WalrusStorage                             │
 //! │                                                              │
 //! │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-//! │  │   Metadata   │  │   Index      │  │   Blob       │       │
-//! │  │   Service    │  │   Cache      │  │   Cache      │       │
+//! │  │   Metadata   │  │   Index      │  │   Range      │       │
+//! │  │   Service    │  │   Cache      │  │   Fetcher    │       │
 //! │  └──────────────┘  └──────────────┘  └──────────────┘       │
 //! │         │                 │                 │                │
 //! │         └─────────────────┼─────────────────┘                │
@@ -141,23 +138,6 @@ pub struct DownloadStats {
     pub checkpoints_processed: u64,
 }
 
-/// Statistics about the available archive
-#[derive(Debug, Clone, Default)]
-pub struct ArchiveStats {
-    /// Total number of blobs in the archive
-    pub total_blobs: usize,
-    /// Total number of checkpoints across all blobs
-    pub total_checkpoints: u64,
-    /// Total size of all blobs in bytes
-    pub total_size_bytes: u64,
-    /// First available checkpoint number
-    pub first_checkpoint: u64,
-    /// Last available checkpoint number
-    pub last_checkpoint: u64,
-    /// Number of blobs that end at an epoch boundary
-    pub epoch_boundary_blobs: usize,
-}
-
 /// Walrus checkpoint storage
 ///
 /// Downloads checkpoints from Walrus aggregator using blob-based storage:
@@ -205,32 +185,13 @@ impl WalrusStorage {
             .clone()
             .unwrap_or_else(|| PathBuf::from(".walrus-cache"));
 
-        // Resolve CLI path (explicit or auto-detected from PATH)
-        let resolved_cli_path = config.resolved_cli_path();
-
-        // When CLI is configured, caching is required (CLI downloads full blobs)
-        let cache_enabled = if resolved_cli_path.is_some() {
-            if !config.cache_enabled {
-                tracing::info!("Enabling cache (required for CLI mode)");
-            }
-            true
-        } else {
-            config.cache_enabled
-        };
-
-        // Create cache directory if caching is enabled
-        if cache_enabled {
+        // Create cache directory if caching is enabled (for CLI or HTTP)
+        if config.cache_enabled {
             std::fs::create_dir_all(&cache_dir).context("failed to create cache dir")?;
         }
 
-        if let Some(ref path) = resolved_cli_path {
-            tracing::info!("Using Walrus CLI: {}", path.display());
-        } else {
-            tracing::info!("Using HTTP aggregator (Walrus CLI not found)");
-        }
-
         // Create health tracker if CLI path is available
-        let health_tracker = resolved_cli_path.as_ref().map(|cli_path| {
+        let health_tracker = config.walrus_cli_path.as_ref().map(|cli_path| {
             NodeHealthTracker::new(
                 cli_path.clone(),
                 config.walrus_cli_context.clone(),
@@ -244,8 +205,8 @@ impl WalrusStorage {
                 archival_url: config.archival_url,
                 aggregator_url: config.aggregator_url,
                 cache_dir,
-                cache_enabled,
-                walrus_cli_path: resolved_cli_path,
+                cache_enabled: config.cache_enabled,
+                walrus_cli_path: config.walrus_cli_path,
                 walrus_cli_context: config.walrus_cli_context,
                 walrus_cli_timeout_secs: config.cli_timeout_secs,
                 coalesce_gap_bytes: config.coalesce_gap_bytes,
@@ -322,7 +283,6 @@ impl WalrusStorage {
     }
 
     /// Check if health poll is needed based on timeout count
-    #[allow(dead_code)]
     async fn maybe_poll_health_on_timeout(&self) {
         let current_timeouts = self.inner.timeout_count.load(Ordering::Relaxed);
         let last_poll_timeouts = self
@@ -350,7 +310,6 @@ impl WalrusStorage {
         }
     }
 
-    #[allow(dead_code)]
     fn record_timeout(&self) {
         self.inner.timeout_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -376,7 +335,6 @@ impl WalrusStorage {
         predictor.classify_range(blob_id, range)
     }
 
-    #[allow(dead_code)]
     async fn log_blob_analysis(&self, blob_id: &str, blob_size: u64) {
         if let Some(analysis) = self.analyze_blob(blob_id, blob_size).await {
             let safe_count = analysis.safe_ranges.len();
@@ -410,8 +368,7 @@ impl WalrusStorage {
             self.inner.archival_url
         );
 
-        // Request all available blobs (default limit is only 50)
-        let url = format!("{}/v1/app_blobs?limit=10000", self.inner.archival_url);
+        let url = format!("{}/v1/app_blobs", self.inner.archival_url);
         let response = self
             .inner
             .client
@@ -442,11 +399,9 @@ impl WalrusStorage {
             .unwrap_or(0);
         let max_end = metadata.iter().map(|b| b.end_checkpoint).max().unwrap_or(0);
 
-        let total_checkpoints = max_end.saturating_sub(min_start);
         tracing::info!(
-            "archival index: {} blobs available ({} checkpoints, range {}..{})",
+            "fetched {} Walrus blobs covering checkpoints {}..{}",
             metadata.len(),
-            total_checkpoints,
             min_start,
             max_end
         );
@@ -490,31 +445,6 @@ impl WalrusStorage {
         let min_start = metadata.iter().map(|b| b.start_checkpoint).min()?;
         let max_end = metadata.iter().map(|b| b.end_checkpoint).max()?;
         Some((min_start, max_end))
-    }
-
-    /// Get comprehensive statistics about the available archive
-    pub async fn archive_stats(&self) -> ArchiveStats {
-        let metadata = self.inner.metadata.read().await;
-
-        if metadata.is_empty() {
-            return ArchiveStats::default();
-        }
-
-        let total_blobs = metadata.len();
-        let total_checkpoints: u64 = metadata.iter().map(|b| b.entries_count).sum();
-        let total_size_bytes: u64 = metadata.iter().map(|b| b.total_size).sum();
-        let first_checkpoint = metadata.iter().map(|b| b.start_checkpoint).min().unwrap_or(0);
-        let last_checkpoint = metadata.iter().map(|b| b.end_checkpoint).max().unwrap_or(0);
-        let epoch_boundary_blobs = metadata.iter().filter(|b| b.end_of_epoch).count();
-
-        ArchiveStats {
-            total_blobs,
-            total_checkpoints,
-            total_size_bytes,
-            first_checkpoint,
-            last_checkpoint,
-            epoch_boundary_blobs,
-        }
     }
 
     /// Find blob containing a specific checkpoint
@@ -588,6 +518,18 @@ impl WalrusStorage {
 
             let max_gap_bytes = self.inner.coalesce_gap_bytes;
             let max_range_bytes = self.inner.coalesce_max_range_bytes;
+
+            // Log blob analysis for streaming mode
+            if self.inner.walrus_cli_path.is_some() && !self.inner.cache_enabled {
+                match self.blob_size_via_cli(&blob.blob_id).await {
+                    Ok(actual_size) => {
+                        self.log_blob_analysis(&blob.blob_id, actual_size).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to get blob size for analysis: {}", e);
+                    }
+                }
+            }
 
             let pending: Vec<(CheckpointSequenceNumber, BlobIndexEntry, ())> = tasks
                 .into_iter()
@@ -719,6 +661,18 @@ impl WalrusStorage {
 
                     if tasks.is_empty() {
                         return Ok::<(), anyhow::Error>(());
+                    }
+
+                    // Log blob analysis
+                    if storage.inner.walrus_cli_path.is_some() && !storage.inner.cache_enabled {
+                        match storage.blob_size_via_cli(&blob.blob_id).await {
+                            Ok(actual_size) => {
+                                storage.log_blob_analysis(&blob.blob_id, actual_size).await;
+                            }
+                            Err(e) => {
+                                tracing::warn!("failed to get blob size for analysis: {}", e);
+                            }
+                        }
                     }
 
                     let chunk_size = if storage.inner.walrus_cli_path.is_some() {
@@ -1128,8 +1082,9 @@ impl WalrusStorage {
 
         let start_time = Instant::now();
         let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
+        let short_id = &blob_id[..12.min(blob_id.len())];
 
-        // Try to get content length with a HEAD request
+        // First, get the content length with a HEAD request
         let total_size = match self
             .inner
             .client
@@ -1142,32 +1097,22 @@ impl WalrusStorage {
                 .headers()
                 .get("content-length")
                 .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok()),
-            Err(_) => None,
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(3_200_000_000),
+            Err(_) => 3_200_000_000, // Default ~3.2 GB estimate
         };
 
-        // Create progress bar - use spinner style if size unknown
+        // Create progress bar
         let pb = if let Some(mp) = &multi_progress {
-            let pb = if let Some(size) = total_size {
-                let pb = mp.add(ProgressBar::new(size));
-                pb.set_style(
-                    ProgressStyle::default_bar()
-                        .template("{prefix:.bold} [{bar:30.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) {msg}")
-                        .unwrap()
-                        .progress_chars("█▓░"),
-                );
-                pb
-            } else {
-                let pb = mp.add(ProgressBar::new_spinner());
-                pb.set_style(
-                    ProgressStyle::default_spinner()
-                        .template("{prefix:.bold} {bytes} downloaded ({bytes_per_sec}) {msg}")
-                        .unwrap(),
-                );
-                pb
-            };
+            let pb = mp.add(ProgressBar::new(total_size));
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{prefix:.bold} [{bar:30.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) {msg}")
+                    .unwrap()
+                    .progress_chars("█▓░"),
+            );
             pb.set_prefix(format!("[Blob {}]", blob_index + 1));
-            pb.set_message(blob_id.to_string());
+            pb.set_message(format!("{}...", short_id));
             Some(pb)
         } else {
             None
@@ -1240,9 +1185,6 @@ impl WalrusStorage {
     }
 
     /// Download blob via CLI with progress bar
-    ///
-    /// Note: The Walrus CLI downloads to memory and writes the file at the end,
-    /// so we can only show elapsed time during download, not actual progress.
     async fn download_blob_via_cli_with_progress(
         &self,
         blob_id: &str,
@@ -1273,23 +1215,29 @@ impl WalrusStorage {
         }
 
         let start_time = Instant::now();
+        let short_id = &blob_id[..12.min(blob_id.len())];
 
-        // Create progress bar with elapsed time
-        // Note: Walrus CLI doesn't provide progress - it downloads to memory then writes file
+        // Try to get expected blob size for progress bar
+        let expected_size = self.blob_size_via_cli(blob_id).await.unwrap_or(3_200_000_000);
+
+        // Create progress bar that tracks actual file size
         let pb = if let Some(mp) = &multi_progress {
-            let pb = mp.add(ProgressBar::new_spinner());
+            let pb = mp.add(ProgressBar::new(expected_size));
             pb.set_style(
-                ProgressStyle::default_spinner()
-                    .template("{prefix:.bold} {spinner} {elapsed_precise} downloading {msg}")
-                    .unwrap(),
+                ProgressStyle::default_bar()
+                    .template("{prefix:.bold} [{bar:30.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) {msg}")
+                    .unwrap()
+                    .progress_chars("█▓░"),
             );
             pb.set_prefix(format!("[Blob {}]", blob_index + 1));
-            pb.set_message(blob_id.to_string());
-            pb.enable_steady_tick(Duration::from_millis(100));
+            pb.set_message(format!("{}...", short_id));
             Some(pb)
         } else {
             None
         };
+
+        // The walrus CLI writes to a .tmp file first, then renames
+        let tmp_path = output_path.with_extension("tmp");
 
         let mut cmd = Command::new(cli_path);
         cmd.arg("read")
@@ -1299,46 +1247,85 @@ impl WalrusStorage {
             .arg("--out")
             .arg(&output_path);
 
-        let output = self.run_cli_with_timeout(cmd).await;
+        // Spawn the CLI process
+        cmd.kill_on_drop(true);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().context("failed to spawn walrus cli")?;
 
-        match output {
-            Ok(output) if output.status.success() => {
-                let elapsed = start_time.elapsed();
-                let size = tokio::fs::metadata(&output_path)
-                    .await
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                self.inner
-                    .bytes_downloaded
-                    .fetch_add(size, Ordering::Relaxed);
+        // Poll the .tmp file size while the CLI runs
+        let timeout = Duration::from_secs(self.inner.walrus_cli_timeout_secs);
+        let poll_interval = Duration::from_millis(250);
+        let deadline = Instant::now() + timeout;
 
-                if let Some(pb) = &pb {
-                    let mb = size as f64 / 1_000_000.0;
-                    pb.finish_with_message(format!(
-                        "done ({:.1} MB, {:.1} MB/s)",
-                        mb,
-                        mb / elapsed.as_secs_f64()
-                    ));
+        loop {
+            // Check if process finished
+            match tokio::time::timeout(poll_interval, child.wait()).await {
+                Ok(Ok(status)) => {
+                    // Process finished
+                    let elapsed = start_time.elapsed();
+                    let size = tokio::fs::metadata(&output_path)
+                        .await
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+
+                    if status.success() {
+                        self.inner
+                            .bytes_downloaded
+                            .fetch_add(size, Ordering::Relaxed);
+
+                        if let Some(pb) = &pb {
+                            pb.set_position(size);
+                            let mb = size as f64 / 1_000_000.0;
+                            pb.finish_with_message(format!(
+                                "done ({:.1} MB, {:.1} MB/s)",
+                                mb,
+                                mb / elapsed.as_secs_f64()
+                            ));
+                        }
+                        return Ok(output_path);
+                    } else {
+                        if let Some(pb) = &pb {
+                            pb.abandon_with_message("failed");
+                        }
+                        // Try to get stderr
+                        let output = child.wait_with_output().await.ok();
+                        let stderr = output
+                            .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+                            .unwrap_or_default();
+                        return Err(anyhow::anyhow!("CLI failed with status {}: {}", status, stderr));
+                    }
                 }
-                Ok(output_path)
-            }
-            Ok(output) => {
-                if let Some(pb) = &pb {
-                    pb.abandon_with_message("failed");
+                Ok(Err(e)) => {
+                    if let Some(pb) = &pb {
+                        pb.abandon_with_message("failed");
+                    }
+                    return Err(anyhow::anyhow!("CLI process error: {}", e));
                 }
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(anyhow::anyhow!("CLI failed: {}", stderr))
-            }
-            Err(e) => {
-                if let Some(pb) = &pb {
-                    pb.abandon_with_message("error");
+                Err(_) => {
+                    // Timeout on wait - process still running, update progress
+                    if let Some(pb) = &pb {
+                        // Check .tmp file size
+                        if let Ok(metadata) = tokio::fs::metadata(&tmp_path).await {
+                            pb.set_position(metadata.len());
+                        }
+                    }
+
+                    // Check overall timeout
+                    if Instant::now() > deadline {
+                        child.kill().await.ok();
+                        if let Some(pb) = &pb {
+                            pb.abandon_with_message("timed out");
+                        }
+                        return Err(anyhow::anyhow!(
+                            "walrus cli timed out after {}s",
+                            self.inner.walrus_cli_timeout_secs
+                        ));
+                    }
                 }
-                Err(e)
             }
         }
     }
 
-    #[allow(dead_code)]
     async fn read_range_via_cli(&self, blob_id: &str, start: u64, length: u64) -> Result<Vec<u8>> {
         let cli_path = self
             .inner
@@ -1385,7 +1372,6 @@ impl WalrusStorage {
         Ok(output.stdout)
     }
 
-    #[allow(dead_code)]
     async fn read_range_via_cli_resilient(
         &self,
         blob_id: &str,
@@ -1425,9 +1411,7 @@ impl WalrusStorage {
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("walrus cli range read failed")))
     }
 
-    #[allow(dead_code)]
     async fn blob_size_via_cli(&self, blob_id: &str) -> Result<u64> {
-        // Check cache first
         {
             let cache = self.inner.blob_size_cache.read().await;
             if let Some(size) = cache.get(blob_id) {
@@ -1435,21 +1419,73 @@ impl WalrusStorage {
             }
         }
 
-        // Check if we have the blob cached locally - can get size from file
-        let cached_path = self.get_cached_blob_path(blob_id);
-        if cached_path.exists() {
-            let metadata = tokio::fs::metadata(&cached_path).await?;
-            let size = metadata.len();
-            let mut cache = self.inner.blob_size_cache.write().await;
-            cache.insert(blob_id.to_string(), size);
-            return Ok(size);
+        let cli_path = self
+            .inner
+            .walrus_cli_path
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Walrus CLI path not configured"))?;
+
+        let mut stdout = String::new();
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 1..=3 {
+            let mut cmd = Command::new(cli_path);
+            cmd.arg("read")
+                .arg(blob_id)
+                .arg("--context")
+                .arg(&self.inner.walrus_cli_context)
+                .arg("--size-only")
+                .arg("--json");
+
+            let output = self.run_cli_with_timeout(cmd).await?;
+
+            if output.status.success() {
+                stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                last_err = None;
+                break;
+            }
+
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            last_err = Some(anyhow::anyhow!(
+                "walrus cli size-only failed with status {}: {}",
+                output.status,
+                stderr.trim()
+            ));
+            tracing::warn!("walrus cli size-only failed (attempt {}/3)", attempt);
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
 
-        // Standard Walrus CLI doesn't support getting blob size without downloading
-        // Return error to trigger fallback to HTTP aggregator for index loading
-        Err(anyhow::anyhow!(
-            "blob size not available (blob not cached locally)"
-        ))
+        if let Some(err) = last_err {
+            return Err(err);
+        }
+
+        let trimmed = stdout.trim();
+        let mut size: Option<u64> = None;
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(s) = val.get("size").and_then(|v| v.as_u64()) {
+                size = Some(s);
+            } else if let Some(s) = val.get("blobSize").and_then(|v| v.as_u64()) {
+                size = Some(s);
+            } else if let Some(s) = val.get("blob_size").and_then(|v| v.as_u64()) {
+                size = Some(s);
+            } else if let Some(s) = val.get("unencoded_size").and_then(|v| v.as_u64()) {
+                size = Some(s);
+            } else if let Some(s) = val.as_u64() {
+                size = Some(s);
+            }
+        } else if let Ok(s) = trimmed.parse::<u64>() {
+            size = Some(s);
+        }
+
+        let size = size.ok_or_else(|| {
+            anyhow::anyhow!(
+                "unable to parse blob size from walrus cli output: {}",
+                trimmed
+            )
+        })?;
+
+        let mut cache = self.inner.blob_size_cache.write().await;
+        cache.insert(blob_id.to_string(), size);
+        Ok(size)
     }
 
     async fn load_blob_index(&self, blob_id: &str) -> Result<HashMap<u64, BlobIndexEntry>> {
@@ -1512,29 +1548,49 @@ impl WalrusStorage {
             return Ok(index);
         }
 
-        // If CLI is configured, download the blob first, then read index from cache
+        // If CLI is configured, read footer + index via range reads
         if self.inner.walrus_cli_path.is_some() {
-            // Download blob via CLI (this caches it locally)
-            self.download_blob_via_cli(blob_id).await?;
+            let total_size = self.blob_size_via_cli(blob_id).await?;
 
-            // Now read from the cached file (reuse logic from above)
-            let mut file = std::fs::File::open(&cached_path)?;
-            let file_len = file.metadata()?.len();
-            if file_len < 24 {
-                return Err(anyhow::anyhow!("downloaded blob too small"));
+            if total_size < 24 {
+                return Err(anyhow::anyhow!("blob {} is too small", blob_id));
             }
-            file.seek(SeekFrom::Start(file_len - 24))?;
-            let magic = file.read_u32::<LittleEndian>()?;
+
+            let footer_start = total_size - 24;
+            let footer_bytes = self
+                .read_range_via_cli_resilient(blob_id, footer_start, 24)
+                .await?;
+
+            if footer_bytes.len() != 24 {
+                return Err(anyhow::anyhow!(
+                    "invalid footer length for blob {}: {}",
+                    blob_id,
+                    footer_bytes.len()
+                ));
+            }
+
+            let mut cursor = Cursor::new(&footer_bytes);
+            let magic = cursor.read_u32::<LittleEndian>()?;
             if magic != 0x574c4244 {
-                return Err(anyhow::anyhow!("invalid blob footer magic"));
+                return Err(anyhow::anyhow!("invalid blob footer magic: {:x}", magic));
             }
-            let _version = file.read_u32::<LittleEndian>()?;
-            let index_start_offset = file.read_u64::<LittleEndian>()?;
-            let count = file.read_u32::<LittleEndian>()?;
 
-            file.seek(SeekFrom::Start(index_start_offset))?;
-            let mut index_bytes = Vec::new();
-            file.read_to_end(&mut index_bytes)?;
+            let _version = cursor.read_u32::<LittleEndian>()?;
+            let index_start_offset = cursor.read_u64::<LittleEndian>()?;
+            let count = cursor.read_u32::<LittleEndian>()?;
+
+            if index_start_offset >= total_size {
+                return Err(anyhow::anyhow!(
+                    "invalid index start offset {} for blob size {}",
+                    index_start_offset,
+                    total_size
+                ));
+            }
+
+            let index_len = total_size - index_start_offset;
+            let index_bytes = self
+                .read_range_via_cli_resilient(blob_id, index_start_offset, index_len)
+                .await?;
 
             let mut cursor = Cursor::new(&index_bytes);
             let mut index = HashMap::with_capacity(count as usize);
@@ -1564,7 +1620,7 @@ impl WalrusStorage {
             return Ok(index);
         }
 
-        // HTTP aggregator mode (no CLI)
+        // Fallback to HTTP aggregator
         tracing::info!("fetching index for blob {} from aggregator", blob_id);
 
         let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
@@ -1696,7 +1752,7 @@ impl WalrusStorage {
             return Ok(buffer);
         }
 
-        // If caching is enabled (always true when CLI is configured), download and cache first
+        // If caching is enabled, ensure blob is cached first (unified method)
         if self.inner.cache_enabled {
             self.ensure_blob_cached(blob_id).await?;
             // Read from cached file
@@ -1708,7 +1764,14 @@ impl WalrusStorage {
             return Ok(buffer);
         }
 
-        // HTTP aggregator mode with range requests (no caching)
+        // Streaming mode (no caching) - use CLI range reads if available
+        if self.inner.walrus_cli_path.is_some() {
+            return self
+                .read_range_via_cli_resilient(blob_id, start, length)
+                .await;
+        }
+
+        // Fallback to HTTP range requests (no caching, no CLI)
         let url = format!("{}/v1/blobs/{}", self.inner.aggregator_url, blob_id);
         let end = start + length - 1;
 
