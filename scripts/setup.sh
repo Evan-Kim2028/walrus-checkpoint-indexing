@@ -166,9 +166,14 @@ REQUIREMENTS="$PROJECT_DIR/requirements.txt"
 # Check if uv is installed, if not install it
 if ! command -v uv &> /dev/null; then
     echo "  Installing uv (fast Python package manager)..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null
-    # Source the env to get uv in path
-    export PATH="$HOME/.local/bin:$PATH"
+    if curl -LsSf https://astral.sh/uv/install.sh | sh; then
+        echo "  uv installed successfully"
+    else
+        echo "  Failed to install uv automatically"
+        echo "  Install manually: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    fi
+    # Add uv to PATH for this session
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
 
 if command -v uv &> /dev/null; then
