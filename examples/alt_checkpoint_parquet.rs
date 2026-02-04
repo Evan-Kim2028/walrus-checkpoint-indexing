@@ -141,7 +141,8 @@ struct Args {
     #[arg(long, short, default_value = "./parquet_output")]
     output_dir: PathBuf,
 
-    /// Optional package ID to filter events (hex string, e.g. 0xabc...)
+    /// Optional package ID to filter output to transactions touching this package
+    /// (events/move_calls filtered to package; tx/object/balance rows limited to matching txs)
     #[arg(long)]
     package: Option<String>,
 
@@ -1132,9 +1133,9 @@ impl Processor for ComprehensivePipeline {
 
         let mut output = CheckpointOutput::default();
 
-        // Tier 2: Checkpoint metadata
+        // Tier 2: Checkpoint metadata (emitted only if any matching txs when filtered)
         let gas_summary = checkpoint.summary.epoch_rolling_gas_cost_summary.clone();
-        output.checkpoints.push(CheckpointRow {
+        let checkpoint_row = CheckpointRow {
             checkpoint_num,
             timestamp_ms,
             epoch,
@@ -1148,7 +1149,9 @@ impl Processor for ComprehensivePipeline {
             storage_rebate: gas_summary.storage_rebate,
             non_refundable_storage_fee: gas_summary.non_refundable_storage_fee,
             end_of_epoch: checkpoint.summary.end_of_epoch_data.is_some(),
-        });
+        };
+
+        let mut checkpoint_has_matches = self.package_filter.is_none();
 
         // Process each transaction
         for tx in &checkpoint.transactions {
@@ -1163,13 +1166,14 @@ impl Processor for ComprehensivePipeline {
                 gas_summary.computation_cost + gas_summary.storage_cost - gas_summary.storage_rebate;
 
             // Check execution status
+            let mut execution_error_row: Option<ExecutionErrorRow> = None;
             let (status, error_message) = match effects.status() {
                 sui_types::execution_status::ExecutionStatus::Success => {
                     ("success".to_string(), None)
                 }
                 sui_types::execution_status::ExecutionStatus::Failure { error, command } => {
                     let err_msg = format!("{:?} at command {:?}", error, command);
-                    output.execution_errors.push(ExecutionErrorRow {
+                    execution_error_row = Some(ExecutionErrorRow {
                         checkpoint_num,
                         timestamp_ms,
                         tx_digest: tx_digest.clone(),
@@ -1187,21 +1191,119 @@ impl Processor for ComprehensivePipeline {
 
             // Extract Move calls using the official API method
             let calls = tx_data.move_calls();
-            let move_calls_count = calls.len() as u32;
-            for (idx, package, module, function) in calls {
-                output.move_calls.push(MoveCallRow {
-                    checkpoint_num,
-                    timestamp_ms,
-                    tx_digest: tx_digest.clone(),
-                    call_index: idx as u32,
-                    package_id: format!("{}", package),
-                    module: module.to_string(),
-                    function: function.to_string(),
-                });
+
+            // Package filter: determine if this tx should be included at all
+            let package_filter = self.package_filter.as_ref();
+            let package_prefix = package_filter.map(|pkg| format!("{}::", pkg));
+
+            let mut tx_matches = package_filter.is_none();
+            if let Some(pkg) = package_filter {
+                if calls.iter().any(|(_, package, _, _)| **package == *pkg) {
+                    tx_matches = true;
+                }
+
+                if !tx_matches {
+                    if let Some(tx_events) = &tx.events {
+                        if tx_events.data.iter().any(|e| &e.package_id == pkg) {
+                            tx_matches = true;
+                        }
+                    }
+                }
+
+                if !tx_matches {
+                    for obj in tx.output_objects(&checkpoint.object_set) {
+                        if obj.is_package() && obj.id() == *pkg {
+                            tx_matches = true;
+                            break;
+                        }
+                    }
+                }
+
+                if !tx_matches {
+                    if let Some(prefix) = package_prefix.as_ref() {
+                        for obj in tx.input_objects(&checkpoint.object_set) {
+                            if obj
+                                .type_()
+                                .map(|t| t.to_string().starts_with(prefix))
+                                .unwrap_or(false)
+                            {
+                                tx_matches = true;
+                                break;
+                            }
+                        }
+                        if !tx_matches {
+                            for obj in tx.output_objects(&checkpoint.object_set) {
+                                if obj
+                                    .type_()
+                                    .map(|t| t.to_string().starts_with(prefix))
+                                    .unwrap_or(false)
+                                {
+                                    tx_matches = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
-            // Events count
-            let events_count = tx.events.as_ref().map(|e| e.data.len()).unwrap_or(0) as u32;
+            if package_filter.is_some() && !tx_matches {
+                continue;
+            }
+
+            checkpoint_has_matches = true;
+
+            if let Some(row) = execution_error_row.take() {
+                output.execution_errors.push(row);
+            }
+
+            let mut move_calls_count = 0u32;
+            for (idx, package, module, function) in calls {
+                let matches_filter = match package_filter {
+                    Some(pkg) => *package == *pkg,
+                    None => true,
+                };
+
+                if matches_filter {
+                    output.move_calls.push(MoveCallRow {
+                        checkpoint_num,
+                        timestamp_ms,
+                        tx_digest: tx_digest.clone(),
+                        call_index: idx as u32,
+                        package_id: format!("{}", package),
+                        module: module.to_string(),
+                        function: function.to_string(),
+                    });
+                    move_calls_count += 1;
+                }
+            }
+
+            let mut events_count = 0u32;
+
+            // Tier 1: Events
+            if let Some(tx_events) = &tx.events {
+                for (event_index, event) in tx_events.data.iter().enumerate() {
+                    let matches_filter = match package_filter {
+                        Some(pkg) => &event.package_id == pkg,
+                        None => true,
+                    };
+
+                    if matches_filter {
+                        output.events.push(EventRow {
+                            checkpoint_num,
+                            timestamp_ms,
+                            tx_digest: tx_digest.clone(),
+                            event_index: event_index as u32,
+                            package_id: format!("{}", event.package_id),
+                            module: event.transaction_module.to_string(),
+                            event_type: event.type_.name.to_string(),
+                            sender: format!("{}", event.sender),
+                            bcs_data: event.contents.clone(),
+                        });
+                        events_count += 1;
+                    }
+                }
+            }
 
             // Tier 1: Transaction row
             output.transactions.push(TransactionRow {
@@ -1220,30 +1322,6 @@ impl Processor for ComprehensivePipeline {
                 mutated_count,
                 deleted_count,
             });
-
-            // Tier 1: Events
-            if let Some(tx_events) = &tx.events {
-                for (event_index, event) in tx_events.data.iter().enumerate() {
-                    let matches_filter = match &self.package_filter {
-                        Some(pkg) => &event.package_id == pkg,
-                        None => true,
-                    };
-
-                    if matches_filter {
-                        output.events.push(EventRow {
-                            checkpoint_num,
-                            timestamp_ms,
-                            tx_digest: tx_digest.clone(),
-                            event_index: event_index as u32,
-                            package_id: format!("{}", event.package_id),
-                            module: event.transaction_module.to_string(),
-                            event_type: event.type_.name.to_string(),
-                            sender: format!("{}", event.sender),
-                            bcs_data: event.contents.clone(),
-                        });
-                    }
-                }
-            }
 
             // Tier 1: Object changes from effects
             // Look up object types from the object_set for created/mutated objects
@@ -1340,13 +1418,20 @@ impl Processor for ComprehensivePipeline {
             // Tier 2: Packages (check output objects for packages)
             for obj in tx.output_objects(&checkpoint.object_set) {
                 if obj.is_package() {
-                    output.packages.push(PackageRow {
-                        checkpoint_num,
-                        timestamp_ms,
-                        tx_digest: tx_digest.clone(),
-                        package_id: format!("{}", obj.id()),
-                        package_version: obj.version().value(),
-                    });
+                    let matches_filter = match package_filter {
+                        Some(pkg) => obj.id() == *pkg,
+                        None => true,
+                    };
+
+                    if matches_filter {
+                        output.packages.push(PackageRow {
+                            checkpoint_num,
+                            timestamp_ms,
+                            tx_digest: tx_digest.clone(),
+                            package_id: format!("{}", obj.id()),
+                            package_version: obj.version().value(),
+                        });
+                    }
                 }
             }
 
@@ -1389,6 +1474,10 @@ impl Processor for ComprehensivePipeline {
                     amount,
                 });
             }
+        }
+
+        if checkpoint_has_matches {
+            output.checkpoints.push(checkpoint_row);
         }
 
         Ok(vec![output])
