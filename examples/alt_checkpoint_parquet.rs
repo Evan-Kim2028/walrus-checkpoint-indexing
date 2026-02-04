@@ -2131,21 +2131,18 @@ async fn main() -> Result<()> {
     let storage = WalrusStorage::new(args.walrus.clone()).await?;
     storage.initialize().await?;
 
-    // Display archive statistics
-    let stats = storage.archive_stats().await;
-    let total_archive_gb = stats.total_size_bytes as f64 / 1_000_000_000.0;
+    // Display archive coverage (metadata already fetched in initialize())
     eprintln!();
     eprintln!("=== Archive Available ===");
-    eprintln!(
-        "Checkpoint range: {}..{} ({} checkpoints)",
-        stats.first_checkpoint, stats.last_checkpoint, stats.total_checkpoints
-    );
-    eprintln!(
-        "Total archive: {} blobs ({:.2} GB)",
-        stats.total_blobs, total_archive_gb
-    );
-    if stats.epoch_boundary_blobs > 0 {
-        eprintln!("Epoch boundary blobs: {}", stats.epoch_boundary_blobs);
+    if let Some((min_start, max_end)) = storage.coverage_range().await {
+        eprintln!(
+            "Checkpoint range: {}..{} ({} checkpoints)",
+            min_start,
+            max_end,
+            max_end.saturating_sub(min_start)
+        );
+    } else {
+        eprintln!("Checkpoint range: unknown (no metadata)");
     }
 
     // Parallel blob prefetching if enabled

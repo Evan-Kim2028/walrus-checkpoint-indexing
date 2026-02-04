@@ -40,6 +40,7 @@ pub struct BlobMetadata {
 #[derive(Debug, Deserialize)]
 pub struct BlobsResponse {
     pub blobs: Vec<BlobMetadata>,
+    pub next_cursor: Option<u64>,
 }
 
 /// Checkpoint location within a blob

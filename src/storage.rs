@@ -190,8 +190,10 @@ impl WalrusStorage {
             std::fs::create_dir_all(&cache_dir).context("failed to create cache dir")?;
         }
 
+        let walrus_cli_path = config.resolved_cli_path();
+
         // Create health tracker if CLI path is available
-        let health_tracker = config.walrus_cli_path.as_ref().map(|cli_path| {
+        let health_tracker = walrus_cli_path.as_ref().map(|cli_path| {
             NodeHealthTracker::new(
                 cli_path.clone(),
                 config.walrus_cli_context.clone(),
@@ -206,7 +208,7 @@ impl WalrusStorage {
                 aggregator_url: config.aggregator_url,
                 cache_dir,
                 cache_enabled: config.cache_enabled,
-                walrus_cli_path: config.walrus_cli_path,
+                walrus_cli_path,
                 walrus_cli_context: config.walrus_cli_context,
                 walrus_cli_timeout_secs: config.cli_timeout_secs,
                 coalesce_gap_bytes: config.coalesce_gap_bytes,
@@ -368,29 +370,55 @@ impl WalrusStorage {
             self.inner.archival_url
         );
 
-        let url = format!("{}/v1/app_blobs", self.inner.archival_url);
-        let response = self
-            .inner
-            .client
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("failed to fetch blobs from: {}", url))?;
+        let base_url = format!("{}/v1/app_blobs", self.inner.archival_url);
+        let mut all_blobs: Vec<BlobMetadata> = Vec::new();
+        let mut seen_ids: HashSet<String> = HashSet::new();
+        let mut next_cursor: Option<u64> = None;
 
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "Walrus archival service returned error status {}",
-                response.status()
-            ));
+        loop {
+            let url = match next_cursor {
+                Some(cursor) => format!("{}?cursor={}", base_url, cursor),
+                None => base_url.clone(),
+            };
+
+            let response = self
+                .inner
+                .client
+                .get(&url)
+                .send()
+                .await
+                .with_context(|| format!("failed to fetch blobs from: {}", url))?;
+
+            if !response.status().is_success() {
+                return Err(anyhow::anyhow!(
+                    "Walrus archival service returned error status {}",
+                    response.status()
+                ));
+            }
+
+            let blobs: crate::blob::BlobsResponse = response
+                .json()
+                .await
+                .context("failed to parse blobs response")?;
+
+            let mut added = 0usize;
+            for blob in blobs.blobs {
+                if seen_ids.insert(blob.blob_id.clone()) {
+                    all_blobs.push(blob);
+                    added += 1;
+                }
+            }
+
+            next_cursor = blobs.next_cursor;
+
+            // Stop if no new blobs or no further cursor
+            if added == 0 || next_cursor.is_none() {
+                break;
+            }
         }
 
-        let blobs: crate::blob::BlobsResponse = response
-            .json()
-            .await
-            .context("failed to parse blobs response")?;
-
         let mut metadata = self.inner.metadata.write().await;
-        *metadata = blobs.blobs;
+        *metadata = all_blobs;
 
         let min_start = metadata
             .iter()
