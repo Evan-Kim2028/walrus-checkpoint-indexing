@@ -171,6 +171,14 @@ pub struct Config {
     #[arg(long, env = "WALRUS_BLOB_CONCURRENCY", default_value = "4")]
     pub blob_concurrency: usize,
 
+    /// Number of blobs to prefetch ahead while streaming
+    #[arg(long, env = "WALRUS_PREFETCH_BLOBS", default_value = "2")]
+    pub prefetch_blobs: usize,
+
+    /// Maximum number of cached blobs to keep on disk (0 = unlimited)
+    #[arg(long, env = "WALRUS_MAX_CACHED_BLOBS", default_value = "4")]
+    pub max_cached_blobs: usize,
+
     /// Number of byte ranges to fetch in parallel per blob
     #[arg(long, env = "WALRUS_RANGE_CONCURRENCY", default_value = "32")]
     pub range_concurrency: usize,
@@ -270,6 +278,8 @@ pub struct ConfigBuilder {
     cache_dir: Option<PathBuf>,
     cache_enabled: Option<bool>,
     blob_concurrency: Option<usize>,
+    prefetch_blobs: Option<usize>,
+    max_cached_blobs: Option<usize>,
     range_concurrency: Option<usize>,
     cli_timeout_secs: Option<u64>,
     http_timeout_secs: Option<u64>,
@@ -337,6 +347,16 @@ impl ConfigBuilder {
         self
     }
 
+    pub fn prefetch_blobs(mut self, prefetch: usize) -> Self {
+        self.prefetch_blobs = Some(prefetch);
+        self
+    }
+
+    pub fn max_cached_blobs(mut self, max_cached: usize) -> Self {
+        self.max_cached_blobs = Some(max_cached);
+        self
+    }
+
     pub fn range_concurrency(mut self, concurrency: usize) -> Self {
         self.range_concurrency = Some(concurrency);
         self
@@ -367,6 +387,8 @@ impl ConfigBuilder {
             cache_dir: self.cache_dir,
             cache_enabled: self.cache_enabled.unwrap_or(false),
             blob_concurrency: self.blob_concurrency.unwrap_or(4),
+            prefetch_blobs: self.prefetch_blobs.unwrap_or(2),
+            max_cached_blobs: self.max_cached_blobs.unwrap_or(4),
             range_concurrency: self.range_concurrency.unwrap_or(32),
             cli_timeout_secs: self.cli_timeout_secs.unwrap_or(600),
             http_timeout_secs: self.http_timeout_secs.unwrap_or(60),

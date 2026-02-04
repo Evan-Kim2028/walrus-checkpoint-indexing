@@ -366,54 +366,51 @@ impl<P: Processor> MassIndexer<P> {
         let log_interval = self.config.log_interval;
         let watermark_interval = self.config.watermark_interval;
 
-        // Fetch all checkpoints (using get_checkpoints for simpler ownership)
-        let checkpoints = self
-            .storage
-            .get_checkpoints(effective_range.clone())
+        let prefetch_blobs = self.config.storage_config.prefetch_blobs;
+        self.storage
+            .stream_checkpoints_prefetch(effective_range.clone(), prefetch_blobs, |checkpoint| {
+                let processor = &mut self.processor;
+                let watermark = &self.watermark;
+                let stats = &mut stats;
+                async move {
+                    let checkpoint_num = checkpoint.checkpoint_summary.sequence_number;
+
+                    let output = processor
+                        .process(&checkpoint)
+                        .await
+                        .with_context(|| format!("failed to process checkpoint {}", checkpoint_num))?;
+
+                    processor
+                        .commit(checkpoint_num, output)
+                        .await
+                        .with_context(|| format!("failed to commit checkpoint {}", checkpoint_num))?;
+
+                    stats.checkpoints_processed += 1;
+                    stats.current_checkpoint = Some(checkpoint_num);
+
+                    if stats.checkpoints_processed.is_multiple_of(watermark_interval) {
+                        watermark.save(checkpoint_num).await?;
+                    }
+
+                    if stats.checkpoints_processed.is_multiple_of(log_interval) {
+                        let elapsed = start_time.elapsed().as_secs_f64();
+                        let rate = stats.checkpoints_processed as f64 / elapsed;
+                        let progress =
+                            (stats.checkpoints_processed as f64 / total_checkpoints as f64) * 100.0;
+                        tracing::info!(
+                            "progress: {} / {} ({:.1}%), {:.1} cp/s, checkpoint {}",
+                            stats.checkpoints_processed,
+                            total_checkpoints,
+                            progress,
+                            rate,
+                            checkpoint_num
+                        );
+                    }
+                    Ok(())
+                }
+            })
             .await
-            .context("failed to fetch checkpoints from storage")?;
-
-        // Process each checkpoint
-        for checkpoint in checkpoints {
-            let checkpoint_num = checkpoint.checkpoint_summary.sequence_number;
-
-            // Process checkpoint
-            let output = self
-                .processor
-                .process(&checkpoint)
-                .await
-                .with_context(|| format!("failed to process checkpoint {}", checkpoint_num))?;
-
-            // Commit output
-            self.processor
-                .commit(checkpoint_num, output)
-                .await
-                .with_context(|| format!("failed to commit checkpoint {}", checkpoint_num))?;
-
-            stats.checkpoints_processed += 1;
-            stats.current_checkpoint = Some(checkpoint_num);
-
-            // Update watermark periodically
-            if stats.checkpoints_processed.is_multiple_of(watermark_interval) {
-                self.watermark.save(checkpoint_num).await?;
-            }
-
-            // Log progress
-            if stats.checkpoints_processed.is_multiple_of(log_interval) {
-                let elapsed = start_time.elapsed().as_secs_f64();
-                let rate = stats.checkpoints_processed as f64 / elapsed;
-                let progress =
-                    (stats.checkpoints_processed as f64 / total_checkpoints as f64) * 100.0;
-                tracing::info!(
-                    "progress: {} / {} ({:.1}%), {:.1} cp/s, checkpoint {}",
-                    stats.checkpoints_processed,
-                    total_checkpoints,
-                    progress,
-                    rate,
-                    checkpoint_num
-                );
-            }
-        }
+            .context("failed to stream checkpoints from storage")?;
 
         // Finalize stats
         stats.elapsed_secs = start_time.elapsed().as_secs_f64();

@@ -59,6 +59,7 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let prefetch_blobs = cli.config.prefetch_blobs;
 
     // Create storage instance
     let storage = WalrusStorage::new(cli.config).await?;
@@ -70,7 +71,7 @@ async fn main() -> Result<()> {
             end,
             log_interval,
         } => {
-            stream_checkpoints(&storage, start, end, log_interval).await?;
+            stream_checkpoints(&storage, start, end, log_interval, prefetch_blobs).await?;
         }
         Commands::Get { checkpoint } => {
             get_checkpoint(&storage, checkpoint).await?;
@@ -91,6 +92,7 @@ async fn stream_checkpoints(
     start: u64,
     end: u64,
     log_interval: u64,
+    prefetch_blobs: usize,
 ) -> Result<()> {
     tracing::info!("streaming checkpoints {} to {}", start, end);
 
@@ -98,7 +100,7 @@ async fn stream_checkpoints(
     let mut count = 0u64;
 
     storage
-        .stream_checkpoints(start..end, |checkpoint| {
+        .stream_checkpoints_prefetch(start..end, prefetch_blobs, |checkpoint| {
             count += 1;
             async move {
                 if count.is_multiple_of(log_interval) {

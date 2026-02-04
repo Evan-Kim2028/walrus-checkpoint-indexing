@@ -138,6 +138,17 @@ pub struct DownloadStats {
     pub checkpoints_processed: u64,
 }
 
+/// Archive statistics from blob metadata
+#[derive(Debug, Clone, Default)]
+pub struct ArchiveStats {
+    pub total_blobs: usize,
+    pub total_checkpoints: u64,
+    pub total_size_bytes: u64,
+    pub first_checkpoint: u64,
+    pub last_checkpoint: u64,
+    pub epoch_boundary_blobs: usize,
+}
+
 /// Walrus checkpoint storage
 ///
 /// Downloads checkpoints from Walrus aggregator using blob-based storage:
@@ -163,6 +174,7 @@ struct Inner {
     walrus_cli_range_concurrency: usize,
     walrus_cli_range_max_retries: usize,
     walrus_cli_range_retry_delay_secs: u64,
+    max_cached_blobs: usize,
     client: Client,
     index_cache: RwLock<HashMap<String, HashMap<u64, BlobIndexEntry>>>,
     blob_size_cache: RwLock<HashMap<String, u64>>,
@@ -217,6 +229,7 @@ impl WalrusStorage {
                 walrus_cli_range_concurrency: config.range_concurrency.max(1),
                 walrus_cli_range_max_retries: config.max_retries.max(1),
                 walrus_cli_range_retry_delay_secs: config.retry_delay_secs,
+                max_cached_blobs: config.max_cached_blobs,
                 client: Client::builder()
                     .timeout(Duration::from_secs(config.http_timeout_secs))
                     .build()
@@ -475,6 +488,30 @@ impl WalrusStorage {
         Some((min_start, max_end))
     }
 
+    /// Get aggregate statistics about the archive
+    pub async fn archive_stats(&self) -> ArchiveStats {
+        let metadata = self.inner.metadata.read().await;
+        if metadata.is_empty() {
+            return ArchiveStats::default();
+        }
+
+        let total_blobs = metadata.len();
+        let total_size_bytes: u64 = metadata.iter().map(|b| b.total_size).sum();
+        let first_checkpoint = metadata.iter().map(|b| b.start_checkpoint).min().unwrap_or(0);
+        let last_checkpoint = metadata.iter().map(|b| b.end_checkpoint).max().unwrap_or(0);
+        let total_checkpoints = last_checkpoint.saturating_sub(first_checkpoint) + 1;
+        let epoch_boundary_blobs = metadata.iter().filter(|b| b.end_of_epoch).count();
+
+        ArchiveStats {
+            total_blobs,
+            total_checkpoints,
+            total_size_bytes,
+            first_checkpoint,
+            last_checkpoint,
+            epoch_boundary_blobs,
+        }
+    }
+
     /// Find blob containing a specific checkpoint
     async fn find_blob_for_checkpoint(&self, checkpoint: u64) -> Option<BlobMetadata> {
         let metadata = self.inner.metadata.read().await;
@@ -591,6 +628,216 @@ impl WalrusStorage {
         }
 
         Ok(total_processed)
+    }
+
+    /// Stream checkpoints with blob prefetching (overlaps downloads with processing).
+    pub async fn stream_checkpoints_prefetch<F, Fut>(
+        &self,
+        range: std::ops::Range<CheckpointSequenceNumber>,
+        prefetch_blobs: usize,
+        mut on_checkpoint: F,
+    ) -> Result<u64>
+    where
+        F: FnMut(CheckpointData) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        if prefetch_blobs == 0 || !self.inner.cache_enabled {
+            return self.stream_checkpoints(range, on_checkpoint).await;
+        }
+
+        let metadata = self.inner.metadata.read().await;
+        let mut blobs: Vec<BlobMetadata> = metadata
+            .iter()
+            .filter(|b| b.end_checkpoint >= range.start && b.start_checkpoint < range.end)
+            .cloned()
+            .collect();
+        drop(metadata);
+
+        if blobs.is_empty() {
+            return Ok(0);
+        }
+
+        blobs.sort_by_key(|b| b.start_checkpoint);
+        let mut total_processed = 0u64;
+        let mut prefetch_handle: Option<tokio::task::JoinHandle<()>> = None;
+        let max_cached = self.inner.max_cached_blobs;
+        let effective_prefetch = if max_cached > 0 {
+            prefetch_blobs.min(max_cached.saturating_sub(1))
+        } else {
+            prefetch_blobs
+        };
+
+        for (idx, blob) in blobs.iter().enumerate() {
+            // Prefetch next window of blobs in the background.
+            if effective_prefetch > 0 {
+                let should_spawn = prefetch_handle
+                    .as_ref()
+                    .map(|h| h.is_finished())
+                    .unwrap_or(true);
+                if should_spawn {
+                    let ids: Vec<String> = blobs
+                        .iter()
+                        .skip(idx + 1)
+                        .take(effective_prefetch)
+                        .filter(|b| !self.is_blob_cached(&b.blob_id))
+                        .map(|b| b.blob_id.clone())
+                        .collect();
+                    if !ids.is_empty() {
+                        let storage = self.clone();
+                        let concurrency = if storage.inner.walrus_cli_path.is_some() {
+                            storage.inner.walrus_cli_blob_concurrency
+                        } else {
+                            1
+                        };
+                        let ids_len = ids.len();
+                        tracing::info!(
+                            event = "prefetch_start",
+                            blobs = ids_len,
+                            concurrency,
+                            next_blob = %ids[0],
+                            "prefetching blobs"
+                        );
+                        prefetch_handle = Some(tokio::spawn(async move {
+                            let started = std::time::Instant::now();
+                            let res = storage.prefetch_blobs_parallel(&ids, concurrency).await;
+                            let elapsed = started.elapsed().as_secs_f64();
+                            match res {
+                                Ok(done) => {
+                                    tracing::info!(
+                                        event = "prefetch_complete",
+                                        blobs = done,
+                                        elapsed_secs = elapsed,
+                                        "prefetch complete"
+                                    );
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        event = "prefetch_failed",
+                                        error = %err,
+                                        elapsed_secs = elapsed,
+                                        "prefetch failed"
+                                    );
+                                }
+                            }
+                        }));
+                    }
+                }
+            }
+
+            // Ensure blob is cached (works for both CLI and HTTP).
+            tracing::info!(
+                event = "blob_process_start",
+                blob_id = %blob.blob_id,
+                start_checkpoint = blob.start_checkpoint,
+                end_checkpoint = blob.end_checkpoint,
+                "processing blob"
+            );
+            self.ensure_blob_cached(&blob.blob_id).await?;
+
+            let index = match self.load_blob_index(&blob.blob_id).await {
+                Ok(index) => index,
+                Err(e) if self.inner.walrus_cli_path.is_some() => {
+                    self.mark_bad_blob(&blob.blob_id).await;
+                    tracing::warn!(
+                        "skipping blob {} due to index load error: {}",
+                        blob.blob_id,
+                        e
+                    );
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+
+            let start_cp = range.start.max(blob.start_checkpoint);
+            let end_cp_exclusive = range.end.min(blob.end_checkpoint.saturating_add(1));
+            if start_cp >= end_cp_exclusive {
+                continue;
+            }
+
+            let mut tasks = Vec::new();
+            for cp_num in start_cp..end_cp_exclusive {
+                if let Some(entry) = index.get(&cp_num) {
+                    tasks.push((cp_num, entry.clone()));
+                }
+            }
+
+            if tasks.is_empty() {
+                continue;
+            }
+
+            let max_gap_bytes = self.inner.coalesce_gap_bytes;
+            let max_range_bytes = self.inner.coalesce_max_range_bytes;
+
+            let pending: Vec<(CheckpointSequenceNumber, BlobIndexEntry, ())> = tasks
+                .into_iter()
+                .map(|(cp_num, entry)| (cp_num, entry, ()))
+                .collect();
+            let coalesced = coalesce_entries(&pending, max_gap_bytes, max_range_bytes);
+
+            for coalesced_range in coalesced {
+                if coalesced_range.len() == 0 {
+                    continue;
+                }
+
+                let bytes = self
+                    .download_range(&blob.blob_id, coalesced_range.start, coalesced_range.len())
+                    .await?;
+
+                let mut entries = coalesced_range.entries;
+                entries.sort_by_key(|(cp_num, _, _)| *cp_num);
+
+                for (cp_num, entry, _) in entries {
+                    let start = entry.offset.saturating_sub(coalesced_range.start) as usize;
+                    let end = start + entry.length as usize;
+                    let checkpoint = sui_storage::blob::Blob::from_bytes::<CheckpointData>(
+                        &bytes[start..end],
+                    )
+                    .with_context(|| format!("failed to deserialize checkpoint {}", cp_num))?;
+                    on_checkpoint(checkpoint).await?;
+                    total_processed += 1;
+                }
+            }
+
+            if max_cached > 0 {
+                if let Err(err) = self.evict_cached_blob(&blob.blob_id).await {
+                    tracing::warn!(
+                        event = "blob_eviction_failed",
+                        blob_id = %blob.blob_id,
+                        error = %err,
+                        "failed to evict cached blob"
+                    );
+                } else {
+                    tracing::info!(
+                        event = "blob_evicted",
+                        blob_id = %blob.blob_id,
+                        "evicted cached blob"
+                    );
+                }
+            }
+            tracing::info!(
+                event = "blob_process_complete",
+                blob_id = %blob.blob_id,
+                processed = total_processed,
+                "completed blob"
+            );
+        }
+
+        if let Some(handle) = prefetch_handle {
+            let _ = handle.await;
+        }
+
+        Ok(total_processed)
+    }
+
+    async fn evict_cached_blob(&self, blob_id: &str) -> Result<()> {
+        let path = self.get_cached_blob_path(blob_id);
+        if !path.exists() {
+            return Ok(());
+        }
+        tokio::fs::remove_file(&path)
+            .await
+            .with_context(|| format!("failed to remove cached blob {}", path.display()))?;
+        Ok(())
     }
 
     /// Get a single checkpoint
