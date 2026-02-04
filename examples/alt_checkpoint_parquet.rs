@@ -176,6 +176,10 @@ struct Args {
     #[arg(long)]
     show_progress: bool,
 
+    /// Emit JSON structured logs to stderr
+    #[arg(long, default_value_t = false)]
+    json_logs: bool,
+
     #[command(flatten)]
     walrus: Config,
 }
@@ -1610,98 +1614,102 @@ impl Processor for ComprehensivePipeline {
             // Tier 2: Packages (check output objects for packages)
             for obj in tx.output_objects(&checkpoint.object_set) {
                 if obj.is_package() {
-<<<<<<< Updated upstream
                     let matches_filter = match package_filter {
                         Some(pkg) => obj.id() == *pkg,
                         None => true,
                     };
 
                     if matches_filter {
+                        let pkg_id = format!("{}", obj.id());
+                        let pkg_version = obj.version().value();
+
                         output.packages.push(PackageRow {
                             checkpoint_num,
                             timestamp_ms,
                             tx_digest: tx_digest.clone(),
-                            package_id: format!("{}", obj.id()),
-                            package_version: obj.version().value(),
+                            package_id: pkg_id.clone(),
+                            package_version: pkg_version,
                         });
-=======
-                    let pkg_id = format!("{}", obj.id());
-                    let pkg_version = obj.version().value();
 
-                    output.packages.push(PackageRow {
-                        checkpoint_num,
-                        timestamp_ms,
-                        tx_digest: tx_digest.clone(),
-                        package_id: pkg_id.clone(),
-                        package_version: pkg_version,
-                    });
+                        // Extract module bytecode information
+                        if let Some(package) = obj.data.try_as_package() {
+                            for (module_name, bytecode) in package.serialized_module_map() {
+                                // Try to deserialize the module bytecode
+                                if let Ok(compiled) =
+                                    CompiledModule::deserialize_with_defaults(bytecode)
+                                {
+                                    // Extract struct definitions
+                                    for struct_def in compiled.struct_defs() {
+                                        let handle =
+                                            compiled.datatype_handle_at(struct_def.struct_handle);
+                                        let name =
+                                            compiled.identifier_at(handle.name).to_string();
+                                        let abilities = ability_set_to_string(&handle.abilities);
+                                        let type_params_count =
+                                            handle.type_parameters.len() as u32;
+                                        let fields_count = match &struct_def.field_information {
+                                            move_binary_format::file_format::StructFieldInformation::Declared(fields) => {
+                                                fields.len() as u32
+                                            }
+                                            move_binary_format::file_format::StructFieldInformation::Native => 0,
+                                        };
 
-                    // Extract module bytecode information
-                    if let Some(package) = obj.data.try_as_package() {
-                        for (module_name, bytecode) in package.serialized_module_map() {
-                            // Try to deserialize the module bytecode
-                            if let Ok(compiled) = CompiledModule::deserialize_with_defaults(bytecode) {
-                                // Extract struct definitions
-                                for struct_def in compiled.struct_defs() {
-                                    let handle = compiled.datatype_handle_at(struct_def.struct_handle);
-                                    let name = compiled.identifier_at(handle.name).to_string();
-                                    let abilities = ability_set_to_string(&handle.abilities);
-                                    let type_params_count = handle.type_parameters.len() as u32;
-                                    let fields_count = match &struct_def.field_information {
-                                        move_binary_format::file_format::StructFieldInformation::Declared(fields) => fields.len() as u32,
-                                        move_binary_format::file_format::StructFieldInformation::Native => 0,
-                                    };
+                                        output.package_modules.push(PackageModuleRow {
+                                            checkpoint_num,
+                                            timestamp_ms,
+                                            package_id: pkg_id.clone(),
+                                            package_version: pkg_version,
+                                            module_name: module_name.clone(),
+                                            struct_name: Some(name),
+                                            struct_abilities: Some(abilities),
+                                            struct_type_params: Some(type_params_count),
+                                            struct_fields_count: Some(fields_count),
+                                            function_name: None,
+                                            function_visibility: None,
+                                            function_is_entry: None,
+                                            function_type_params: None,
+                                            function_params_count: None,
+                                            function_returns_count: None,
+                                        });
+                                    }
 
-                                    output.package_modules.push(PackageModuleRow {
-                                        checkpoint_num,
-                                        timestamp_ms,
-                                        package_id: pkg_id.clone(),
-                                        package_version: pkg_version,
-                                        module_name: module_name.clone(),
-                                        struct_name: Some(name),
-                                        struct_abilities: Some(abilities),
-                                        struct_type_params: Some(type_params_count),
-                                        struct_fields_count: Some(fields_count),
-                                        function_name: None,
-                                        function_visibility: None,
-                                        function_is_entry: None,
-                                        function_type_params: None,
-                                        function_params_count: None,
-                                        function_returns_count: None,
-                                    });
-                                }
+                                    // Extract function definitions
+                                    for func_def in compiled.function_defs() {
+                                        let handle =
+                                            compiled.function_handle_at(func_def.function);
+                                        let name =
+                                            compiled.identifier_at(handle.name).to_string();
+                                        let visibility =
+                                            visibility_to_string(func_def.visibility);
+                                        let is_entry = func_def.is_entry;
+                                        let type_params_count =
+                                            handle.type_parameters.len() as u32;
+                                        let params_count =
+                                            compiled.signature_at(handle.parameters).0.len() as u32;
+                                        let returns_count =
+                                            compiled.signature_at(handle.return_).0.len() as u32;
 
-                                // Extract function definitions
-                                for func_def in compiled.function_defs() {
-                                    let handle = compiled.function_handle_at(func_def.function);
-                                    let name = compiled.identifier_at(handle.name).to_string();
-                                    let visibility = visibility_to_string(func_def.visibility);
-                                    let is_entry = func_def.is_entry;
-                                    let type_params_count = handle.type_parameters.len() as u32;
-                                    let params_count = compiled.signature_at(handle.parameters).0.len() as u32;
-                                    let returns_count = compiled.signature_at(handle.return_).0.len() as u32;
-
-                                    output.package_modules.push(PackageModuleRow {
-                                        checkpoint_num,
-                                        timestamp_ms,
-                                        package_id: pkg_id.clone(),
-                                        package_version: pkg_version,
-                                        module_name: module_name.clone(),
-                                        struct_name: None,
-                                        struct_abilities: None,
-                                        struct_type_params: None,
-                                        struct_fields_count: None,
-                                        function_name: Some(name),
-                                        function_visibility: Some(visibility.to_string()),
-                                        function_is_entry: Some(is_entry),
-                                        function_type_params: Some(type_params_count),
-                                        function_params_count: Some(params_count),
-                                        function_returns_count: Some(returns_count),
-                                    });
+                                        output.package_modules.push(PackageModuleRow {
+                                            checkpoint_num,
+                                            timestamp_ms,
+                                            package_id: pkg_id.clone(),
+                                            package_version: pkg_version,
+                                            module_name: module_name.clone(),
+                                            struct_name: None,
+                                            struct_abilities: None,
+                                            struct_type_params: None,
+                                            struct_fields_count: None,
+                                            function_name: Some(name),
+                                            function_visibility: Some(visibility.to_string()),
+                                            function_is_entry: Some(is_entry),
+                                            function_type_params: Some(type_params_count),
+                                            function_params_count: Some(params_count),
+                                            function_returns_count: Some(returns_count),
+                                        });
+                                    }
                                 }
                             }
                         }
->>>>>>> Stashed changes
                     }
                 }
             }
@@ -2407,12 +2415,22 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Configure tracing to write to stderr (not stdout) so piping to DuckDB works
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
-        )
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-        .init();
+    let env_filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into());
+    let registry = tracing_subscriber::registry().with(env_filter);
+    if args.json_logs {
+        registry
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .json(),
+            )
+            .init();
+    } else {
+        registry
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+            .init();
+    }
 
     if args.start >= args.end {
         anyhow::bail!("start must be < end");

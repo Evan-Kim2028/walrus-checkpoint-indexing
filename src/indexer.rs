@@ -62,7 +62,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use sui_types::full_checkpoint_content::CheckpointData;
 use sui_types::messages_checkpoint::CheckpointSequenceNumber;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::config::Config;
 use crate::storage::WalrusStorage;
@@ -281,7 +281,7 @@ impl IndexerStats {
 /// 3. Tracks progress via watermarks for resumability
 pub struct MassIndexer<P: Processor> {
     storage: WalrusStorage,
-    processor: P,
+    processor: Arc<Mutex<P>>,
     watermark: Watermark,
     config: IndexerConfig,
 }
@@ -304,7 +304,7 @@ impl<P: Processor> MassIndexer<P> {
 
         Ok(Self {
             storage,
-            processor,
+            processor: Arc::new(Mutex::new(processor)),
             watermark,
             config,
         })
@@ -358,48 +358,70 @@ impl<P: Processor> MassIndexer<P> {
         );
 
         // Notify processor
-        self.processor
-            .on_start(effective_range.start, effective_range.end)
-            .await?;
+        {
+            let mut processor = self.processor.lock().await;
+            processor
+                .on_start(effective_range.start, effective_range.end)
+                .await?;
+        }
 
         let start_time = Instant::now();
         let log_interval = self.config.log_interval;
         let watermark_interval = self.config.watermark_interval;
 
         let prefetch_blobs = self.config.storage_config.prefetch_blobs;
+        let processor = Arc::clone(&self.processor);
+        let watermark = self.watermark.clone();
+        let stats = Arc::new(Mutex::new(stats));
+        let stats_for_closure = Arc::clone(&stats);
         self.storage
-            .stream_checkpoints_prefetch(effective_range.clone(), prefetch_blobs, |checkpoint| {
-                let processor = &mut self.processor;
-                let watermark = &self.watermark;
-                let stats = &mut stats;
+            .stream_checkpoints_prefetch(effective_range.clone(), prefetch_blobs, move |checkpoint| {
+                let processor = Arc::clone(&processor);
+                let watermark = watermark.clone();
+                let stats = Arc::clone(&stats_for_closure);
                 async move {
                     let checkpoint_num = checkpoint.checkpoint_summary.sequence_number;
 
-                    let output = processor
-                        .process(&checkpoint)
-                        .await
-                        .with_context(|| format!("failed to process checkpoint {}", checkpoint_num))?;
+                    let output = {
+                        let processor = processor.lock().await;
+                        processor
+                            .process(&checkpoint)
+                            .await
+                            .with_context(|| {
+                                format!("failed to process checkpoint {}", checkpoint_num)
+                            })?
+                    };
 
-                    processor
-                        .commit(checkpoint_num, output)
-                        .await
-                        .with_context(|| format!("failed to commit checkpoint {}", checkpoint_num))?;
+                    {
+                        let mut processor = processor.lock().await;
+                        processor
+                            .commit(checkpoint_num, output)
+                            .await
+                            .with_context(|| {
+                                format!("failed to commit checkpoint {}", checkpoint_num)
+                            })?;
+                    }
 
-                    stats.checkpoints_processed += 1;
-                    stats.current_checkpoint = Some(checkpoint_num);
+                    let mut stats_guard = stats.lock().await;
+                    stats_guard.checkpoints_processed += 1;
+                    stats_guard.current_checkpoint = Some(checkpoint_num);
 
-                    if stats.checkpoints_processed.is_multiple_of(watermark_interval) {
+                    if stats_guard
+                        .checkpoints_processed
+                        .is_multiple_of(watermark_interval)
+                    {
                         watermark.save(checkpoint_num).await?;
                     }
 
-                    if stats.checkpoints_processed.is_multiple_of(log_interval) {
+                    if stats_guard.checkpoints_processed.is_multiple_of(log_interval) {
                         let elapsed = start_time.elapsed().as_secs_f64();
-                        let rate = stats.checkpoints_processed as f64 / elapsed;
-                        let progress =
-                            (stats.checkpoints_processed as f64 / total_checkpoints as f64) * 100.0;
+                        let rate = stats_guard.checkpoints_processed as f64 / elapsed;
+                        let progress = (stats_guard.checkpoints_processed as f64
+                            / total_checkpoints as f64)
+                            * 100.0;
                         tracing::info!(
                             "progress: {} / {} ({:.1}%), {:.1} cp/s, checkpoint {}",
-                            stats.checkpoints_processed,
+                            stats_guard.checkpoints_processed,
                             total_checkpoints,
                             progress,
                             rate,
@@ -413,6 +435,7 @@ impl<P: Processor> MassIndexer<P> {
             .context("failed to stream checkpoints from storage")?;
 
         // Finalize stats
+        let mut stats = stats.lock().await.clone();
         stats.elapsed_secs = start_time.elapsed().as_secs_f64();
         stats.bytes_downloaded = self.storage.bytes_downloaded();
 
@@ -422,9 +445,12 @@ impl<P: Processor> MassIndexer<P> {
         }
 
         // Notify processor
-        self.processor
-            .on_complete(stats.checkpoints_processed)
-            .await?;
+        {
+            let mut processor = self.processor.lock().await;
+            processor
+                .on_complete(stats.checkpoints_processed)
+                .await?;
+        }
 
         tracing::info!(
             "mass indexer complete: {} checkpoints in {:.2}s ({:.1} cp/s)",

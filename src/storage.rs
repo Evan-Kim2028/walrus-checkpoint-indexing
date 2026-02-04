@@ -38,6 +38,7 @@ use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use tokio::sync::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -187,6 +188,8 @@ struct Inner {
     last_health_poll_timeout_count: AtomicUsize,
     // Sliver prediction for adaptive fetching
     sliver_predictor: RwLock<SliverPredictor>,
+    // Guard to enforce cache eviction limits
+    cache_guard: Mutex<()>,
 }
 
 impl WalrusStorage {
@@ -243,6 +246,7 @@ impl WalrusStorage {
                 timeout_count: AtomicUsize::new(0),
                 last_health_poll_timeout_count: AtomicUsize::new(0),
                 sliver_predictor: RwLock::new(SliverPredictor::new(HashSet::new())),
+                cache_guard: Mutex::new(()),
             }),
         })
     }
@@ -1137,6 +1141,8 @@ impl WalrusStorage {
             return Ok(Some(cached_path));
         }
 
+        self.enforce_cache_limit().await?;
+
         // Download via CLI if available, otherwise via HTTP
         if self.inner.walrus_cli_path.is_some() {
             self.download_blob_via_cli(blob_id).await?;
@@ -1145,6 +1151,47 @@ impl WalrusStorage {
         }
 
         Ok(Some(cached_path))
+    }
+
+    async fn enforce_cache_limit(&self) -> Result<()> {
+        if !self.inner.cache_enabled {
+            return Ok(());
+        }
+        let max_cached = self.inner.max_cached_blobs;
+        if max_cached == 0 {
+            return Ok(());
+        }
+
+        let _guard = self.inner.cache_guard.lock().await;
+        let mut entries: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+        for entry in std::fs::read_dir(&self.inner.cache_dir)
+            .with_context(|| format!("failed to read cache dir {}", self.inner.cache_dir.display()))?
+        {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let meta = entry.metadata()?;
+            let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            entries.push((entry.path(), modified));
+        }
+
+        if entries.len() < max_cached {
+            return Ok(());
+        }
+
+        entries.sort_by_key(|(_, modified)| *modified);
+        let target = max_cached.saturating_sub(1);
+        let to_remove = entries.len().saturating_sub(target);
+        for (path, _) in entries.into_iter().take(to_remove) {
+            if let Err(err) = std::fs::remove_file(&path) {
+                tracing::warn!(path = %path.display(), error = %err, "failed to evict cached blob");
+            } else {
+                tracing::info!(path = %path.display(), event = "blob_cache_evicted", "evicted cached blob to honor cache limit");
+            }
+        }
+
+        Ok(())
     }
 
     /// Check if a blob is cached
