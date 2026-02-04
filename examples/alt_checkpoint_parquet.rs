@@ -93,6 +93,8 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use clap::{Parser, ValueEnum};
+use move_binary_format::file_format::{Ability, AbilitySet, Visibility};
+use move_binary_format::CompiledModule;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
@@ -110,8 +112,6 @@ use sui_types::transaction::TransactionDataAPI;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use move_binary_format::file_format::{Ability, AbilitySet, Visibility};
-use move_binary_format::CompiledModule;
 
 use framework::ingestion::{ClientArgs, IngestionConfig};
 use framework::pipeline::sequential::{Handler, SequentialConfig};
@@ -121,10 +121,10 @@ use framework::store::{
 };
 use framework::types::base_types::ObjectID;
 use framework::types::full_checkpoint_content::CheckpointData;
-use sui_types::full_checkpoint_content::Checkpoint;
 use framework::{Indexer, IndexerArgs};
 use sui_indexer_alt_framework as framework;
 use sui_storage::blob::{Blob, BlobEncoding};
+use sui_types::full_checkpoint_content::Checkpoint;
 use walrus_checkpoint_indexing::{Config, WalrusStorage};
 
 #[derive(Parser, Debug)]
@@ -340,8 +340,8 @@ struct PackageModuleRow {
     module_name: String,
     // Struct info (NULL if this row is for a function)
     struct_name: Option<String>,
-    struct_abilities: Option<String>,  // comma-separated: "copy,drop,store,key"
-    struct_type_params: Option<u32>,   // count of type parameters
+    struct_abilities: Option<String>, // comma-separated: "copy,drop,store,key"
+    struct_type_params: Option<u32>,  // count of type parameters
     struct_fields_count: Option<u32>,
     // Function info (NULL if this row is for a struct)
     function_name: Option<String>,
@@ -1328,10 +1328,7 @@ impl Processor for ComprehensivePipeline {
             checkpoint_num,
             timestamp_ms,
             epoch,
-            previous_digest: checkpoint
-                .summary
-                .previous_digest
-                .map(|d| format!("{}", d)),
+            previous_digest: checkpoint.summary.previous_digest.map(|d| format!("{}", d)),
             transactions_count: checkpoint.transactions.len() as u32,
             computation_cost: gas_summary.computation_cost,
             storage_cost: gas_summary.storage_cost,
@@ -1351,8 +1348,8 @@ impl Processor for ComprehensivePipeline {
 
             // Get gas info
             let gas_summary = effects.gas_cost_summary();
-            let gas_used =
-                gas_summary.computation_cost + gas_summary.storage_cost - gas_summary.storage_rebate;
+            let gas_used = gas_summary.computation_cost + gas_summary.storage_cost
+                - gas_summary.storage_rebate;
 
             // Check execution status
             let mut execution_error_row: Option<ExecutionErrorRow> = None;
@@ -1405,6 +1402,23 @@ impl Processor for ComprehensivePipeline {
                             tx_matches = true;
                             break;
                         }
+                    }
+                }
+
+                if !tx_matches {
+                    // Include dynamic field mutations even when package filtering is enabled.
+                    // This ensures downstream state reconstruction (e.g. DeepBook orderbooks)
+                    // has access to dynamic field objects.
+                    let has_dynamic_field = tx
+                        .input_objects(&checkpoint.object_set)
+                        .chain(tx.output_objects(&checkpoint.object_set))
+                        .any(|obj| {
+                            obj.type_()
+                                .map(|t| t.to_string().starts_with("0x2::dynamic_field"))
+                                .unwrap_or(false)
+                        });
+                    if has_dynamic_field {
+                        tx_matches = true;
                     }
                 }
 
@@ -1469,10 +1483,8 @@ impl Processor for ComprehensivePipeline {
 
             let mut events_count = 0u32;
             // Serialize transaction and effects for offline replay
-            let tx_bcs = bcs::to_bytes(&tx.transaction)
-                .unwrap_or_else(|_| Vec::new());
-            let effects_bcs = bcs::to_bytes(&tx.effects)
-                .unwrap_or_else(|_| Vec::new());
+            let tx_bcs = bcs::to_bytes(&tx.transaction).unwrap_or_else(|_| Vec::new());
+            let effects_bcs = bcs::to_bytes(&tx.effects).unwrap_or_else(|_| Vec::new());
 
             // Tier 1: Events
             if let Some(tx_events) = &tx.events {
@@ -1642,11 +1654,9 @@ impl Processor for ComprehensivePipeline {
                                     for struct_def in compiled.struct_defs() {
                                         let handle =
                                             compiled.datatype_handle_at(struct_def.struct_handle);
-                                        let name =
-                                            compiled.identifier_at(handle.name).to_string();
+                                        let name = compiled.identifier_at(handle.name).to_string();
                                         let abilities = ability_set_to_string(&handle.abilities);
-                                        let type_params_count =
-                                            handle.type_parameters.len() as u32;
+                                        let type_params_count = handle.type_parameters.len() as u32;
                                         let fields_count = match &struct_def.field_information {
                                             move_binary_format::file_format::StructFieldInformation::Declared(fields) => {
                                                 fields.len() as u32
@@ -1675,15 +1685,11 @@ impl Processor for ComprehensivePipeline {
 
                                     // Extract function definitions
                                     for func_def in compiled.function_defs() {
-                                        let handle =
-                                            compiled.function_handle_at(func_def.function);
-                                        let name =
-                                            compiled.identifier_at(handle.name).to_string();
-                                        let visibility =
-                                            visibility_to_string(func_def.visibility);
+                                        let handle = compiled.function_handle_at(func_def.function);
+                                        let name = compiled.identifier_at(handle.name).to_string();
+                                        let visibility = visibility_to_string(func_def.visibility);
                                         let is_entry = func_def.is_entry;
-                                        let type_params_count =
-                                            handle.type_parameters.len() as u32;
+                                        let type_params_count = handle.type_parameters.len() as u32;
                                         let params_count =
                                             compiled.signature_at(handle.parameters).0.len() as u32;
                                         let returns_count =
@@ -2311,17 +2317,50 @@ struct TableInfo {
 }
 
 const OUTPUT_TABLES: &[TableInfo] = &[
-    TableInfo { name: "checkpoints", description: "Checkpoint metadata (epoch, gas totals)" },
-    TableInfo { name: "transactions", description: "Transaction metadata (sender, gas, status)" },
-    TableInfo { name: "events", description: "Emitted events (package, module, type, bcs)" },
-    TableInfo { name: "move_calls", description: "Function calls (package, module, function)" },
-    TableInfo { name: "objects", description: "Object changes (created/mutated/deleted)" },
-    TableInfo { name: "input_objects", description: "Pre-transaction object state" },
-    TableInfo { name: "output_objects", description: "Post-transaction object state" },
-    TableInfo { name: "balance_changes", description: "Coin balance changes (+/- amounts)" },
-    TableInfo { name: "packages", description: "Published packages" },
-    TableInfo { name: "package_modules", description: "Package bytecode (structs/functions)" },
-    TableInfo { name: "execution_errors", description: "Failed transaction errors" },
+    TableInfo {
+        name: "checkpoints",
+        description: "Checkpoint metadata (epoch, gas totals)",
+    },
+    TableInfo {
+        name: "transactions",
+        description: "Transaction metadata (sender, gas, status)",
+    },
+    TableInfo {
+        name: "events",
+        description: "Emitted events (package, module, type, bcs)",
+    },
+    TableInfo {
+        name: "move_calls",
+        description: "Function calls (package, module, function)",
+    },
+    TableInfo {
+        name: "objects",
+        description: "Object changes (created/mutated/deleted)",
+    },
+    TableInfo {
+        name: "input_objects",
+        description: "Pre-transaction object state",
+    },
+    TableInfo {
+        name: "output_objects",
+        description: "Post-transaction object state",
+    },
+    TableInfo {
+        name: "balance_changes",
+        description: "Coin balance changes (+/- amounts)",
+    },
+    TableInfo {
+        name: "packages",
+        description: "Published packages",
+    },
+    TableInfo {
+        name: "package_modules",
+        description: "Package bytecode (structs/functions)",
+    },
+    TableInfo {
+        name: "execution_errors",
+        description: "Failed transaction errors",
+    },
 ];
 
 #[cfg(feature = "duckdb")]
@@ -2332,13 +2371,19 @@ fn output_summary(output_dir: &Path) -> Result<()> {
     eprintln!("\n=== Output Summary ===");
     eprintln!("Directory: {}", output_dir.display());
     eprintln!();
-    eprintln!("{:<20} {:>12} {:>10}  {}", "Table", "Rows", "Size", "Description");
+    eprintln!(
+        "{:<20} {:>12} {:>10}  {}",
+        "Table", "Rows", "Size", "Description"
+    );
     eprintln!("{}", "-".repeat(80));
 
     for table in OUTPUT_TABLES {
         let path = output_dir.join(format!("{}.parquet", table.name));
         if path.exists() {
-            let size_kb = path.metadata().map(|m| m.len() as f64 / 1024.0).unwrap_or(0.0);
+            let size_kb = path
+                .metadata()
+                .map(|m| m.len() as f64 / 1024.0)
+                .unwrap_or(0.0);
             let size_str = if size_kb >= 1024.0 {
                 format!("{:.1} MB", size_kb / 1024.0)
             } else {
@@ -2351,7 +2396,10 @@ fn output_summary(output_dir: &Path) -> Result<()> {
                 Ok(count) => {
                     eprintln!(
                         "{:<20} {:>12} {:>10}  {}",
-                        table.name, format_count(count), size_str, table.description
+                        table.name,
+                        format_count(count),
+                        size_str,
+                        table.description
                     );
                 }
                 Err(_) => {
@@ -2383,7 +2431,10 @@ fn output_summary(output_dir: &Path) -> Result<()> {
     for table in OUTPUT_TABLES {
         let path = output_dir.join(format!("{}.parquet", table.name));
         if path.exists() {
-            let size_kb = path.metadata().map(|m| m.len() as f64 / 1024.0).unwrap_or(0.0);
+            let size_kb = path
+                .metadata()
+                .map(|m| m.len() as f64 / 1024.0)
+                .unwrap_or(0.0);
             let size_str = if size_kb >= 1024.0 {
                 format!("{:.1} MB", size_kb / 1024.0)
             } else {
@@ -2480,7 +2531,10 @@ async fn main() -> Result<()> {
 
         eprintln!();
         eprintln!("=== Blob Download ===");
-        eprintln!("Checkpoints: {} (range {}..{})", checkpoints_requested, args.start, args.end);
+        eprintln!(
+            "Checkpoints: {} (range {}..{})",
+            checkpoints_requested, args.start, args.end
+        );
         eprintln!("Blobs to download: {}", num_blobs);
         eprintln!("Total download size: {:.2} GB", total_gb);
         eprintln!();
@@ -2498,7 +2552,10 @@ async fn main() -> Result<()> {
             );
         }
         eprintln!();
-        eprintln!("Concurrency: {} parallel downloads", args.prefetch_concurrency);
+        eprintln!(
+            "Concurrency: {} parallel downloads",
+            args.prefetch_concurrency
+        );
         eprintln!("Timeout: {} seconds per blob", args.walrus.cli_timeout_secs);
         eprintln!();
 
@@ -2519,8 +2576,15 @@ async fn main() -> Result<()> {
 
         eprintln!();
         eprintln!("=== Download Complete ===");
-        eprintln!("Downloaded: {}/{} blobs ({:.2} GB)", prefetched, num_blobs, downloaded_gb);
-        eprintln!("Time: {:.1}s ({:.1} MB/s average)", prefetch_elapsed.as_secs_f64(), speed_mbps);
+        eprintln!(
+            "Downloaded: {}/{} blobs ({:.2} GB)",
+            prefetched, num_blobs, downloaded_gb
+        );
+        eprintln!(
+            "Time: {:.1}s ({:.1} MB/s average)",
+            prefetch_elapsed.as_secs_f64(),
+            speed_mbps
+        );
         eprintln!();
     }
 
@@ -2534,7 +2598,10 @@ async fn main() -> Result<()> {
     let num_checkpoints = args.end.saturating_sub(args.start);
     eprintln!();
     eprintln!("=== Processing Checkpoints ===");
-    eprintln!("Checkpoints to process: {} ({}..{})", num_checkpoints, args.start, args.end);
+    eprintln!(
+        "Checkpoints to process: {} ({}..{})",
+        num_checkpoints, args.start, args.end
+    );
     eprintln!("Output directory: {}", args.output_dir.display());
     eprintln!();
     eprintln!("Processing with sui-indexer-alt-framework...");
