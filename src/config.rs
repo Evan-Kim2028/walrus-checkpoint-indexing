@@ -37,7 +37,10 @@ pub fn find_walrus_cli() -> Option<PathBuf> {
 /// official Walrus CLI. The `Forked` variant is kept for backwards compatibility
 /// but has no effect.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[deprecated(since = "0.2.0", note = "Forked CLI is no longer supported. Use official Walrus CLI.")]
+#[deprecated(
+    since = "0.2.0",
+    note = "Forked CLI is no longer supported. Use official Walrus CLI."
+)]
 #[allow(deprecated)]
 pub enum CliCapabilities {
     /// Official Walrus CLI - the only supported option.
@@ -70,7 +73,10 @@ impl std::str::FromStr for CliCapabilities {
 /// **DEPRECATED**: This enum is deprecated. The library now only uses full blob
 /// downloads. Other variants are kept for backwards compatibility but have no effect.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[deprecated(since = "0.2.0", note = "Only FullBlob strategy is supported. Other strategies are ignored.")]
+#[deprecated(
+    since = "0.2.0",
+    note = "Only FullBlob strategy is supported. Other strategies are ignored."
+)]
 #[allow(deprecated)]
 pub enum FetchStrategy {
     /// Download full blobs, then extract checkpoints locally.
@@ -83,7 +89,10 @@ pub enum FetchStrategy {
     ByteRangeStream,
 
     /// Deprecated: Adaptive strategy is no longer supported.
-    #[deprecated(since = "0.2.0", note = "Adaptive is no longer supported, FullBlob is always used")]
+    #[deprecated(
+        since = "0.2.0",
+        note = "Adaptive is no longer supported, FullBlob is always used"
+    )]
     Adaptive,
 }
 
@@ -150,11 +159,21 @@ pub struct Config {
     pub walrus_cli_context: String,
 
     /// DEPRECATED: CLI capabilities setting (ignored)
-    #[arg(long, env = "WALRUS_CLI_CAPABILITIES", default_value = "official", hide = true)]
+    #[arg(
+        long,
+        env = "WALRUS_CLI_CAPABILITIES",
+        default_value = "official",
+        hide = true
+    )]
     pub cli_capabilities: String,
 
     /// DEPRECATED: Fetch strategy setting (ignored, always uses full-blob)
-    #[arg(long, env = "WALRUS_FETCH_STRATEGY", default_value = "full-blob", hide = true)]
+    #[arg(
+        long,
+        env = "WALRUS_FETCH_STRATEGY",
+        default_value = "full-blob",
+        hide = true
+    )]
     pub fetch_strategy: String,
 
     // === Caching ===
@@ -313,7 +332,10 @@ impl ConfigBuilder {
     }
 
     /// Set CLI capabilities.
-    #[deprecated(since = "0.2.0", note = "Forked CLI is no longer supported. This setting is ignored.")]
+    #[deprecated(
+        since = "0.2.0",
+        note = "Forked CLI is no longer supported. This setting is ignored."
+    )]
     #[allow(deprecated)]
     pub fn cli_capabilities(mut self, capabilities: CliCapabilities) -> Self {
         self.cli_capabilities = Some(capabilities);
@@ -321,13 +343,16 @@ impl ConfigBuilder {
     }
 
     /// Set fetch strategy.
-    #[deprecated(since = "0.2.0", note = "Only FullBlob strategy is supported. This setting is ignored.")]
+    #[deprecated(
+        since = "0.2.0",
+        note = "Only FullBlob strategy is supported. This setting is ignored."
+    )]
     #[allow(deprecated)]
     pub fn fetch_strategy(mut self, strategy: FetchStrategy) -> Self {
         self.fetch_strategy = Some(match strategy {
             FetchStrategy::FullBlob => "full-blob".to_string(),
             FetchStrategy::ByteRangeStream => "full-blob".to_string(), // Ignore, use FullBlob
-            FetchStrategy::Adaptive => "full-blob".to_string(), // Ignore, use FullBlob
+            FetchStrategy::Adaptive => "full-blob".to_string(),        // Ignore, use FullBlob
         });
         self
     }

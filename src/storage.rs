@@ -38,7 +38,6 @@ use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use tokio::sync::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -46,12 +45,15 @@ use sui_types::full_checkpoint_content::CheckpointData;
 use sui_types::messages_checkpoint::CheckpointSequenceNumber;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 
 use crate::blob::BlobMetadata;
 use crate::config::Config;
 use crate::node_health::NodeHealthTracker;
 use crate::sliver::{BlobAnalysis, RangeRisk, SliverPredictor};
+
+const DEFAULT_ESTIMATED_BLOB_SIZE: u64 = 3_200_000_000;
 
 /// Parsed index entry from a blob
 #[derive(Debug, Clone)]
@@ -501,7 +503,11 @@ impl WalrusStorage {
 
         let total_blobs = metadata.len();
         let total_size_bytes: u64 = metadata.iter().map(|b| b.total_size).sum();
-        let first_checkpoint = metadata.iter().map(|b| b.start_checkpoint).min().unwrap_or(0);
+        let first_checkpoint = metadata
+            .iter()
+            .map(|b| b.start_checkpoint)
+            .min()
+            .unwrap_or(0);
         let last_checkpoint = metadata.iter().map(|b| b.end_checkpoint).max().unwrap_or(0);
         let total_checkpoints = last_checkpoint.saturating_sub(first_checkpoint) + 1;
         let epoch_boundary_blobs = metadata.iter().filter(|b| b.end_of_epoch).count();
@@ -1164,9 +1170,12 @@ impl WalrusStorage {
 
         let _guard = self.inner.cache_guard.lock().await;
         let mut entries: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
-        for entry in std::fs::read_dir(&self.inner.cache_dir)
-            .with_context(|| format!("failed to read cache dir {}", self.inner.cache_dir.display()))?
-        {
+        for entry in std::fs::read_dir(&self.inner.cache_dir).with_context(|| {
+            format!(
+                "failed to read cache dir {}",
+                self.inner.cache_dir.display()
+            )
+        })? {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
                 continue;
@@ -1540,7 +1549,10 @@ impl WalrusStorage {
         let short_id = &blob_id[..12.min(blob_id.len())];
 
         // Try to get expected blob size for progress bar
-        let expected_size = self.blob_size_via_cli(blob_id).await.unwrap_or(3_200_000_000);
+        let expected_size = self
+            .blob_size_via_cli(blob_id)
+            .await
+            .unwrap_or(3_200_000_000);
 
         // Create progress bar that tracks actual file size
         let pb = if let Some(mp) = &multi_progress {
@@ -1614,7 +1626,11 @@ impl WalrusStorage {
                         let stderr = output
                             .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
                             .unwrap_or_default();
-                        return Err(anyhow::anyhow!("CLI failed with status {}: {}", status, stderr));
+                        return Err(anyhow::anyhow!(
+                            "CLI failed with status {}: {}",
+                            status,
+                            stderr
+                        ));
                     }
                 }
                 Ok(Err(e)) => {
@@ -1777,7 +1793,14 @@ impl WalrusStorage {
         }
 
         if let Some(err) = last_err {
-            return Err(err);
+            tracing::warn!(
+                error = %err,
+                "walrus cli size-only unavailable; using default size"
+            );
+            let fallback = DEFAULT_ESTIMATED_BLOB_SIZE;
+            let mut cache = self.inner.blob_size_cache.write().await;
+            cache.insert(blob_id.to_string(), fallback);
+            return Ok(fallback);
         }
 
         let trimmed = stdout.trim();

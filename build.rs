@@ -23,7 +23,9 @@ fn main() {
             println!("cargo:warning=The Walrus CLI is required to download checkpoint blobs.");
             println!("cargo:warning=");
             println!("cargo:warning=Run ./scripts/setup.sh to install automatically,");
-            println!("cargo:warning=or install manually from: https://docs.wal.app/usage/setup.html");
+            println!(
+                "cargo:warning=or install manually from: https://docs.wal.app/usage/setup.html"
+            );
             println!("cargo:warning=");
             println!("cargo:warning=After installing, verify with: walrus --version");
             println!("cargo:warning=");

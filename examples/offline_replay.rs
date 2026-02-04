@@ -276,9 +276,16 @@ fn get_input_objects_for_tx(
 
 /// Result of analyzing a transaction
 enum AnalysisResult {
-    Replayable { inputs_found: usize, inputs_expected: usize },
+    Replayable {
+        inputs_found: usize,
+        inputs_expected: usize,
+    },
     NotPTB,
-    MissingObjects { found: usize, expected: usize, missing_ids: Vec<String> },
+    MissingObjects {
+        found: usize,
+        expected: usize,
+        missing_ids: Vec<String>,
+    },
 }
 
 /// Analyze a transaction for replay capability - MORE RIGOROUS VERSION
@@ -286,8 +293,8 @@ enum AnalysisResult {
 fn analyze_transaction(
     tx: &TransactionRecord,
     input_objects: &[Object],
-    expected_input_ids: &[(String, u64)],  // (object_id, version) from parquet
-    verbose: bool
+    expected_input_ids: &[(String, u64)], // (object_id, version) from parquet
+    verbose: bool,
 ) -> AnalysisResult {
     use sui_types::transaction::TransactionKind;
 
@@ -345,7 +352,10 @@ fn analyze_transaction(
                 AnalysisResult::MissingObjects {
                     found: 0,
                     expected: expected_input_ids.len(),
-                    missing_ids: expected_input_ids.iter().map(|(id, v)| format!("{}@{}", id, v)).collect(),
+                    missing_ids: expected_input_ids
+                        .iter()
+                        .map(|(id, v)| format!("{}@{}", id, v))
+                        .collect(),
                 }
             } else {
                 AnalysisResult::Replayable {
@@ -410,12 +420,16 @@ fn main() -> Result<()> {
     for tx in &transactions {
         print!("TX {} (cp {})... ", &tx.digest[..12], tx.checkpoint_num);
 
-        let (input_objects, expected_ids) = get_input_objects_for_tx(&args.parquet_dir, &tx.digest, &cache)?;
+        let (input_objects, expected_ids) =
+            get_input_objects_for_tx(&args.parquet_dir, &tx.digest, &cache)?;
 
         let result = analyze_transaction(tx, &input_objects, &expected_ids, args.verbose);
 
         match result {
-            AnalysisResult::Replayable { inputs_found, inputs_expected } => {
+            AnalysisResult::Replayable {
+                inputs_found,
+                inputs_expected,
+            } => {
                 println!(
                     "✓ Replayable ({}/{} inputs, status: {})",
                     inputs_found, inputs_expected, tx.status
@@ -426,7 +440,11 @@ fn main() -> Result<()> {
                 println!("- Skipped (not PTB)");
                 not_ptb += 1;
             }
-            AnalysisResult::MissingObjects { found, expected, missing_ids } => {
+            AnalysisResult::MissingObjects {
+                found,
+                expected,
+                missing_ids,
+            } => {
                 println!("✗ Missing {}/{} objects", expected - found, expected);
                 missing_objects_count += 1;
                 total_missing += missing_ids.len();
@@ -449,7 +467,10 @@ fn main() -> Result<()> {
     println!("Total transactions:  {}", transactions.len());
     println!("PTB transactions:    {}", ptb_count);
     println!("  - Replayable:      {}", replayable);
-    println!("  - Missing objects: {} txs ({} objects total)", missing_objects_count, total_missing);
+    println!(
+        "  - Missing objects: {} txs ({} objects total)",
+        missing_objects_count, total_missing
+    );
     println!("Non-PTB (skipped):   {}", not_ptb);
     if ptb_count > 0 {
         println!(

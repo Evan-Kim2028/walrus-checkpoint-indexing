@@ -375,62 +375,66 @@ impl<P: Processor> MassIndexer<P> {
         let stats = Arc::new(Mutex::new(stats));
         let stats_for_closure = Arc::clone(&stats);
         self.storage
-            .stream_checkpoints_prefetch(effective_range.clone(), prefetch_blobs, move |checkpoint| {
-                let processor = Arc::clone(&processor);
-                let watermark = watermark.clone();
-                let stats = Arc::clone(&stats_for_closure);
-                async move {
-                    let checkpoint_num = checkpoint.checkpoint_summary.sequence_number;
+            .stream_checkpoints_prefetch(
+                effective_range.clone(),
+                prefetch_blobs,
+                move |checkpoint| {
+                    let processor = Arc::clone(&processor);
+                    let watermark = watermark.clone();
+                    let stats = Arc::clone(&stats_for_closure);
+                    async move {
+                        let checkpoint_num = checkpoint.checkpoint_summary.sequence_number;
 
-                    let output = {
-                        let processor = processor.lock().await;
-                        processor
-                            .process(&checkpoint)
-                            .await
-                            .with_context(|| {
+                        let output = {
+                            let processor = processor.lock().await;
+                            processor.process(&checkpoint).await.with_context(|| {
                                 format!("failed to process checkpoint {}", checkpoint_num)
                             })?
-                    };
+                        };
 
-                    {
-                        let mut processor = processor.lock().await;
-                        processor
-                            .commit(checkpoint_num, output)
-                            .await
-                            .with_context(|| {
-                                format!("failed to commit checkpoint {}", checkpoint_num)
-                            })?;
+                        {
+                            let mut processor = processor.lock().await;
+                            processor
+                                .commit(checkpoint_num, output)
+                                .await
+                                .with_context(|| {
+                                    format!("failed to commit checkpoint {}", checkpoint_num)
+                                })?;
+                        }
+
+                        let mut stats_guard = stats.lock().await;
+                        stats_guard.checkpoints_processed += 1;
+                        stats_guard.current_checkpoint = Some(checkpoint_num);
+
+                        if stats_guard
+                            .checkpoints_processed
+                            .is_multiple_of(watermark_interval)
+                        {
+                            watermark.save(checkpoint_num).await?;
+                        }
+
+                        if stats_guard
+                            .checkpoints_processed
+                            .is_multiple_of(log_interval)
+                        {
+                            let elapsed = start_time.elapsed().as_secs_f64();
+                            let rate = stats_guard.checkpoints_processed as f64 / elapsed;
+                            let progress = (stats_guard.checkpoints_processed as f64
+                                / total_checkpoints as f64)
+                                * 100.0;
+                            tracing::info!(
+                                "progress: {} / {} ({:.1}%), {:.1} cp/s, checkpoint {}",
+                                stats_guard.checkpoints_processed,
+                                total_checkpoints,
+                                progress,
+                                rate,
+                                checkpoint_num
+                            );
+                        }
+                        Ok(())
                     }
-
-                    let mut stats_guard = stats.lock().await;
-                    stats_guard.checkpoints_processed += 1;
-                    stats_guard.current_checkpoint = Some(checkpoint_num);
-
-                    if stats_guard
-                        .checkpoints_processed
-                        .is_multiple_of(watermark_interval)
-                    {
-                        watermark.save(checkpoint_num).await?;
-                    }
-
-                    if stats_guard.checkpoints_processed.is_multiple_of(log_interval) {
-                        let elapsed = start_time.elapsed().as_secs_f64();
-                        let rate = stats_guard.checkpoints_processed as f64 / elapsed;
-                        let progress = (stats_guard.checkpoints_processed as f64
-                            / total_checkpoints as f64)
-                            * 100.0;
-                        tracing::info!(
-                            "progress: {} / {} ({:.1}%), {:.1} cp/s, checkpoint {}",
-                            stats_guard.checkpoints_processed,
-                            total_checkpoints,
-                            progress,
-                            rate,
-                            checkpoint_num
-                        );
-                    }
-                    Ok(())
-                }
-            })
+                },
+            )
             .await
             .context("failed to stream checkpoints from storage")?;
 
@@ -447,9 +451,7 @@ impl<P: Processor> MassIndexer<P> {
         // Notify processor
         {
             let mut processor = self.processor.lock().await;
-            processor
-                .on_complete(stats.checkpoints_processed)
-                .await?;
+            processor.on_complete(stats.checkpoints_processed).await?;
         }
 
         tracing::info!(
