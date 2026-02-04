@@ -110,6 +110,8 @@ use sui_types::transaction::TransactionDataAPI;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use move_binary_format::file_format::{Ability, AbilitySet, Visibility};
+use move_binary_format::CompiledModule;
 
 use framework::ingestion::{ClientArgs, IngestionConfig};
 use framework::pipeline::sequential::{Handler, SequentialConfig};
@@ -202,7 +204,7 @@ struct EventRow {
     bcs_data: Vec<u8>,
 }
 
-/// Tier 1: Transactions table
+/// Tier 1: Transactions table (with full BCS for offline replay)
 #[derive(Debug, Clone)]
 struct TransactionRow {
     checkpoint_num: u64,
@@ -219,6 +221,10 @@ struct TransactionRow {
     created_count: u32,
     mutated_count: u32,
     deleted_count: u32,
+    /// Full TransactionData BCS bytes for offline replay
+    tx_bcs: Vec<u8>,
+    /// TransactionEffects BCS bytes for validation
+    effects_bcs: Vec<u8>,
 }
 
 /// Tier 1: Move calls table
@@ -271,7 +277,7 @@ struct PackageRow {
     package_version: u64,
 }
 
-/// Tier 3: Input objects table
+/// Tier 3: Input objects table (with full BCS for offline replay)
 #[derive(Debug, Clone)]
 struct InputObjectRow {
     checkpoint_num: u64,
@@ -281,9 +287,11 @@ struct InputObjectRow {
     version: u64,
     object_type: Option<String>,
     owner: Option<String>,
+    /// Full Object BCS bytes for offline replay
+    bcs_data: Vec<u8>,
 }
 
-/// Tier 3: Output objects table
+/// Tier 3: Output objects table (with full BCS for offline replay)
 #[derive(Debug, Clone)]
 struct OutputObjectRow {
     checkpoint_num: u64,
@@ -293,6 +301,8 @@ struct OutputObjectRow {
     version: u64,
     object_type: Option<String>,
     owner: Option<String>,
+    /// Full Object BCS bytes for offline replay
+    bcs_data: Vec<u8>,
 }
 
 /// Tier 3: Balance changes table
@@ -316,6 +326,28 @@ struct ExecutionErrorRow {
     error_message: String,
 }
 
+/// Package module interface - extracted from bytecode
+#[derive(Debug, Clone)]
+struct PackageModuleRow {
+    checkpoint_num: u64,
+    timestamp_ms: u64,
+    package_id: String,
+    package_version: u64,
+    module_name: String,
+    // Struct info (NULL if this row is for a function)
+    struct_name: Option<String>,
+    struct_abilities: Option<String>,  // comma-separated: "copy,drop,store,key"
+    struct_type_params: Option<u32>,   // count of type parameters
+    struct_fields_count: Option<u32>,
+    // Function info (NULL if this row is for a struct)
+    function_name: Option<String>,
+    function_visibility: Option<String>, // "public", "friend", "private"
+    function_is_entry: Option<bool>,
+    function_type_params: Option<u32>,
+    function_params_count: Option<u32>,
+    function_returns_count: Option<u32>,
+}
+
 /// Combined output from processing a checkpoint
 #[derive(Debug, Clone, Default)]
 struct CheckpointOutput {
@@ -325,6 +357,7 @@ struct CheckpointOutput {
     object_changes: Vec<ObjectChangeRow>,
     checkpoints: Vec<CheckpointRow>,
     packages: Vec<PackageRow>,
+    package_modules: Vec<PackageModuleRow>,
     input_objects: Vec<InputObjectRow>,
     output_objects: Vec<OutputObjectRow>,
     balance_changes: Vec<BalanceChangeRow>,
@@ -343,6 +376,7 @@ struct MultiParquetSink {
     object_changes_writer: Mutex<Option<ArrowWriter<File>>>,
     checkpoints_writer: Mutex<Option<ArrowWriter<File>>>,
     packages_writer: Mutex<Option<ArrowWriter<File>>>,
+    package_modules_writer: Mutex<Option<ArrowWriter<File>>>,
     input_objects_writer: Mutex<Option<ArrowWriter<File>>>,
     output_objects_writer: Mutex<Option<ArrowWriter<File>>>,
     balance_changes_writer: Mutex<Option<ArrowWriter<File>>>,
@@ -361,6 +395,7 @@ impl MultiParquetSink {
             object_changes_writer: Mutex::new(None),
             checkpoints_writer: Mutex::new(None),
             packages_writer: Mutex::new(None),
+            package_modules_writer: Mutex::new(None),
             input_objects_writer: Mutex::new(None),
             output_objects_writer: Mutex::new(None),
             balance_changes_writer: Mutex::new(None),
@@ -405,6 +440,8 @@ impl MultiParquetSink {
             Field::new("created_count", DataType::UInt32, false),
             Field::new("mutated_count", DataType::UInt32, false),
             Field::new("deleted_count", DataType::UInt32, false),
+            Field::new("tx_bcs", DataType::Binary, false),
+            Field::new("effects_bcs", DataType::Binary, false),
         ]))
     }
 
@@ -458,6 +495,28 @@ impl MultiParquetSink {
         ]))
     }
 
+    fn package_modules_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("checkpoint_num", DataType::UInt64, false),
+            Field::new("timestamp_ms", DataType::UInt64, false),
+            Field::new("package_id", DataType::Utf8, false),
+            Field::new("package_version", DataType::UInt64, false),
+            Field::new("module_name", DataType::Utf8, false),
+            // Struct fields (nullable - only set for struct rows)
+            Field::new("struct_name", DataType::Utf8, true),
+            Field::new("struct_abilities", DataType::Utf8, true),
+            Field::new("struct_type_params", DataType::UInt32, true),
+            Field::new("struct_fields_count", DataType::UInt32, true),
+            // Function fields (nullable - only set for function rows)
+            Field::new("function_name", DataType::Utf8, true),
+            Field::new("function_visibility", DataType::Utf8, true),
+            Field::new("function_is_entry", DataType::Boolean, true),
+            Field::new("function_type_params", DataType::UInt32, true),
+            Field::new("function_params_count", DataType::UInt32, true),
+            Field::new("function_returns_count", DataType::UInt32, true),
+        ]))
+    }
+
     fn input_objects_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![
             Field::new("checkpoint_num", DataType::UInt64, false),
@@ -467,6 +526,7 @@ impl MultiParquetSink {
             Field::new("version", DataType::UInt64, false),
             Field::new("object_type", DataType::Utf8, true),
             Field::new("owner", DataType::Utf8, true),
+            Field::new("bcs_data", DataType::Binary, false),
         ]))
     }
 
@@ -479,6 +539,7 @@ impl MultiParquetSink {
             Field::new("version", DataType::UInt64, false),
             Field::new("object_type", DataType::Utf8, true),
             Field::new("owner", DataType::Utf8, true),
+            Field::new("bcs_data", DataType::Binary, false),
         ]))
     }
 
@@ -527,6 +588,10 @@ impl MultiParquetSink {
         // Write packages
         if !output.packages.is_empty() {
             self.write_packages(&output.packages).await?;
+        }
+        // Write package_modules
+        if !output.package_modules.is_empty() {
+            self.write_package_modules(&output.package_modules).await?;
         }
         // Write input_objects
         if !output.input_objects.is_empty() {
@@ -629,6 +694,8 @@ impl MultiParquetSink {
         let mut created_count = UInt32Builder::with_capacity(rows.len());
         let mut mutated_count = UInt32Builder::with_capacity(rows.len());
         let mut deleted_count = UInt32Builder::with_capacity(rows.len());
+        let mut tx_bcs = BinaryBuilder::with_capacity(rows.len(), rows.len() * 512);
+        let mut effects_bcs = BinaryBuilder::with_capacity(rows.len(), rows.len() * 256);
 
         for row in rows {
             checkpoint_num.append_value(row.checkpoint_num);
@@ -648,6 +715,8 @@ impl MultiParquetSink {
             created_count.append_value(row.created_count);
             mutated_count.append_value(row.mutated_count);
             deleted_count.append_value(row.deleted_count);
+            tx_bcs.append_value(&row.tx_bcs);
+            effects_bcs.append_value(&row.effects_bcs);
         }
 
         let batch = RecordBatch::try_new(
@@ -667,6 +736,8 @@ impl MultiParquetSink {
                 Arc::new(created_count.finish()),
                 Arc::new(mutated_count.finish()),
                 Arc::new(deleted_count.finish()),
+                Arc::new(tx_bcs.finish()),
+                Arc::new(effects_bcs.finish()),
             ],
         )?;
 
@@ -887,6 +958,113 @@ impl MultiParquetSink {
         Ok(())
     }
 
+    async fn write_package_modules(&self, rows: &[PackageModuleRow]) -> Result<()> {
+        let mut guard = self.package_modules_writer.lock().await;
+        if guard.is_none() {
+            let file = File::create(self.output_dir.join("package_modules.parquet"))?;
+            *guard = Some(ArrowWriter::try_new(
+                file,
+                Self::package_modules_schema(),
+                Some(Self::writer_props()),
+            )?);
+        }
+
+        let schema = Self::package_modules_schema();
+        let mut checkpoint_num = UInt64Builder::with_capacity(rows.len());
+        let mut timestamp_ms = UInt64Builder::with_capacity(rows.len());
+        let mut package_id = StringBuilder::with_capacity(rows.len(), rows.len() * 66);
+        let mut package_version = UInt64Builder::with_capacity(rows.len());
+        let mut module_name = StringBuilder::with_capacity(rows.len(), rows.len() * 32);
+        let mut struct_name = StringBuilder::with_capacity(rows.len(), rows.len() * 32);
+        let mut struct_abilities = StringBuilder::with_capacity(rows.len(), rows.len() * 32);
+        let mut struct_type_params = UInt32Builder::with_capacity(rows.len());
+        let mut struct_fields_count = UInt32Builder::with_capacity(rows.len());
+        let mut function_name = StringBuilder::with_capacity(rows.len(), rows.len() * 32);
+        let mut function_visibility = StringBuilder::with_capacity(rows.len(), rows.len() * 16);
+        let mut function_is_entry = BooleanBuilder::with_capacity(rows.len());
+        let mut function_type_params = UInt32Builder::with_capacity(rows.len());
+        let mut function_params_count = UInt32Builder::with_capacity(rows.len());
+        let mut function_returns_count = UInt32Builder::with_capacity(rows.len());
+
+        for row in rows {
+            checkpoint_num.append_value(row.checkpoint_num);
+            timestamp_ms.append_value(row.timestamp_ms);
+            package_id.append_value(&row.package_id);
+            package_version.append_value(row.package_version);
+            module_name.append_value(&row.module_name);
+
+            // Struct fields
+            match &row.struct_name {
+                Some(v) => struct_name.append_value(v),
+                None => struct_name.append_null(),
+            }
+            match &row.struct_abilities {
+                Some(v) => struct_abilities.append_value(v),
+                None => struct_abilities.append_null(),
+            }
+            match row.struct_type_params {
+                Some(v) => struct_type_params.append_value(v),
+                None => struct_type_params.append_null(),
+            }
+            match row.struct_fields_count {
+                Some(v) => struct_fields_count.append_value(v),
+                None => struct_fields_count.append_null(),
+            }
+
+            // Function fields
+            match &row.function_name {
+                Some(v) => function_name.append_value(v),
+                None => function_name.append_null(),
+            }
+            match &row.function_visibility {
+                Some(v) => function_visibility.append_value(v),
+                None => function_visibility.append_null(),
+            }
+            match row.function_is_entry {
+                Some(v) => function_is_entry.append_value(v),
+                None => function_is_entry.append_null(),
+            }
+            match row.function_type_params {
+                Some(v) => function_type_params.append_value(v),
+                None => function_type_params.append_null(),
+            }
+            match row.function_params_count {
+                Some(v) => function_params_count.append_value(v),
+                None => function_params_count.append_null(),
+            }
+            match row.function_returns_count {
+                Some(v) => function_returns_count.append_value(v),
+                None => function_returns_count.append_null(),
+            }
+        }
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(checkpoint_num.finish()) as ArrayRef,
+                Arc::new(timestamp_ms.finish()),
+                Arc::new(package_id.finish()),
+                Arc::new(package_version.finish()),
+                Arc::new(module_name.finish()),
+                Arc::new(struct_name.finish()),
+                Arc::new(struct_abilities.finish()),
+                Arc::new(struct_type_params.finish()),
+                Arc::new(struct_fields_count.finish()),
+                Arc::new(function_name.finish()),
+                Arc::new(function_visibility.finish()),
+                Arc::new(function_is_entry.finish()),
+                Arc::new(function_type_params.finish()),
+                Arc::new(function_params_count.finish()),
+                Arc::new(function_returns_count.finish()),
+            ],
+        )?;
+
+        if let Some(writer) = guard.as_mut() {
+            writer.write(&batch)?;
+        }
+        Ok(())
+    }
+
     async fn write_input_objects(&self, rows: &[InputObjectRow]) -> Result<()> {
         let mut guard = self.input_objects_writer.lock().await;
         if guard.is_none() {
@@ -906,6 +1084,7 @@ impl MultiParquetSink {
         let mut version = UInt64Builder::with_capacity(rows.len());
         let mut object_type = StringBuilder::with_capacity(rows.len(), rows.len() * 64);
         let mut owner = StringBuilder::with_capacity(rows.len(), rows.len() * 66);
+        let mut bcs_data = BinaryBuilder::with_capacity(rows.len(), rows.len() * 1024);
 
         for row in rows {
             checkpoint_num.append_value(row.checkpoint_num);
@@ -921,6 +1100,7 @@ impl MultiParquetSink {
                 Some(o) => owner.append_value(o),
                 None => owner.append_null(),
             }
+            bcs_data.append_value(&row.bcs_data);
         }
 
         let batch = RecordBatch::try_new(
@@ -933,6 +1113,7 @@ impl MultiParquetSink {
                 Arc::new(version.finish()),
                 Arc::new(object_type.finish()),
                 Arc::new(owner.finish()),
+                Arc::new(bcs_data.finish()),
             ],
         )?;
 
@@ -961,6 +1142,7 @@ impl MultiParquetSink {
         let mut version = UInt64Builder::with_capacity(rows.len());
         let mut object_type = StringBuilder::with_capacity(rows.len(), rows.len() * 64);
         let mut owner = StringBuilder::with_capacity(rows.len(), rows.len() * 66);
+        let mut bcs_data = BinaryBuilder::with_capacity(rows.len(), rows.len() * 1024);
 
         for row in rows {
             checkpoint_num.append_value(row.checkpoint_num);
@@ -976,6 +1158,7 @@ impl MultiParquetSink {
                 Some(o) => owner.append_value(o),
                 None => owner.append_null(),
             }
+            bcs_data.append_value(&row.bcs_data);
         }
 
         let batch = RecordBatch::try_new(
@@ -988,6 +1171,7 @@ impl MultiParquetSink {
                 Arc::new(version.finish()),
                 Arc::new(object_type.finish()),
                 Arc::new(owner.finish()),
+                Arc::new(bcs_data.finish()),
             ],
         )?;
 
@@ -1102,6 +1286,7 @@ impl MultiParquetSink {
         close_writer!(self.object_changes_writer);
         close_writer!(self.checkpoints_writer);
         close_writer!(self.packages_writer);
+        close_writer!(self.package_modules_writer);
         close_writer!(self.input_objects_writer);
         close_writer!(self.output_objects_writer);
         close_writer!(self.balance_changes_writer);
@@ -1279,6 +1464,11 @@ impl Processor for ComprehensivePipeline {
             }
 
             let mut events_count = 0u32;
+            // Serialize transaction and effects for offline replay
+            let tx_bcs = bcs::to_bytes(&tx.transaction)
+                .unwrap_or_else(|_| Vec::new());
+            let effects_bcs = bcs::to_bytes(&tx.effects)
+                .unwrap_or_else(|_| Vec::new());
 
             // Tier 1: Events
             if let Some(tx_events) = &tx.events {
@@ -1321,6 +1511,8 @@ impl Processor for ComprehensivePipeline {
                 created_count,
                 mutated_count,
                 deleted_count,
+                tx_bcs,
+                effects_bcs,
             });
 
             // Tier 1: Object changes from effects
@@ -1418,6 +1610,7 @@ impl Processor for ComprehensivePipeline {
             // Tier 2: Packages (check output objects for packages)
             for obj in tx.output_objects(&checkpoint.object_set) {
                 if obj.is_package() {
+<<<<<<< Updated upstream
                     let matches_filter = match package_filter {
                         Some(pkg) => obj.id() == *pkg,
                         None => true,
@@ -1431,12 +1624,92 @@ impl Processor for ComprehensivePipeline {
                             package_id: format!("{}", obj.id()),
                             package_version: obj.version().value(),
                         });
+=======
+                    let pkg_id = format!("{}", obj.id());
+                    let pkg_version = obj.version().value();
+
+                    output.packages.push(PackageRow {
+                        checkpoint_num,
+                        timestamp_ms,
+                        tx_digest: tx_digest.clone(),
+                        package_id: pkg_id.clone(),
+                        package_version: pkg_version,
+                    });
+
+                    // Extract module bytecode information
+                    if let Some(package) = obj.data.try_as_package() {
+                        for (module_name, bytecode) in package.serialized_module_map() {
+                            // Try to deserialize the module bytecode
+                            if let Ok(compiled) = CompiledModule::deserialize_with_defaults(bytecode) {
+                                // Extract struct definitions
+                                for struct_def in compiled.struct_defs() {
+                                    let handle = compiled.datatype_handle_at(struct_def.struct_handle);
+                                    let name = compiled.identifier_at(handle.name).to_string();
+                                    let abilities = ability_set_to_string(&handle.abilities);
+                                    let type_params_count = handle.type_parameters.len() as u32;
+                                    let fields_count = match &struct_def.field_information {
+                                        move_binary_format::file_format::StructFieldInformation::Declared(fields) => fields.len() as u32,
+                                        move_binary_format::file_format::StructFieldInformation::Native => 0,
+                                    };
+
+                                    output.package_modules.push(PackageModuleRow {
+                                        checkpoint_num,
+                                        timestamp_ms,
+                                        package_id: pkg_id.clone(),
+                                        package_version: pkg_version,
+                                        module_name: module_name.clone(),
+                                        struct_name: Some(name),
+                                        struct_abilities: Some(abilities),
+                                        struct_type_params: Some(type_params_count),
+                                        struct_fields_count: Some(fields_count),
+                                        function_name: None,
+                                        function_visibility: None,
+                                        function_is_entry: None,
+                                        function_type_params: None,
+                                        function_params_count: None,
+                                        function_returns_count: None,
+                                    });
+                                }
+
+                                // Extract function definitions
+                                for func_def in compiled.function_defs() {
+                                    let handle = compiled.function_handle_at(func_def.function);
+                                    let name = compiled.identifier_at(handle.name).to_string();
+                                    let visibility = visibility_to_string(func_def.visibility);
+                                    let is_entry = func_def.is_entry;
+                                    let type_params_count = handle.type_parameters.len() as u32;
+                                    let params_count = compiled.signature_at(handle.parameters).0.len() as u32;
+                                    let returns_count = compiled.signature_at(handle.return_).0.len() as u32;
+
+                                    output.package_modules.push(PackageModuleRow {
+                                        checkpoint_num,
+                                        timestamp_ms,
+                                        package_id: pkg_id.clone(),
+                                        package_version: pkg_version,
+                                        module_name: module_name.clone(),
+                                        struct_name: None,
+                                        struct_abilities: None,
+                                        struct_type_params: None,
+                                        struct_fields_count: None,
+                                        function_name: Some(name),
+                                        function_visibility: Some(visibility.to_string()),
+                                        function_is_entry: Some(is_entry),
+                                        function_type_params: Some(type_params_count),
+                                        function_params_count: Some(params_count),
+                                        function_returns_count: Some(returns_count),
+                                    });
+                                }
+                            }
+                        }
+>>>>>>> Stashed changes
                     }
                 }
             }
 
-            // Tier 3: Input objects
+            // Tier 3: Input objects (with full BCS for offline replay)
             for obj in tx.input_objects(&checkpoint.object_set) {
+                // Serialize the full Object for offline replay
+                let bcs_data = bcs::to_bytes(obj).unwrap_or_else(|_| Vec::new());
                 output.input_objects.push(InputObjectRow {
                     checkpoint_num,
                     timestamp_ms,
@@ -1445,11 +1718,14 @@ impl Processor for ComprehensivePipeline {
                     version: obj.version().value(),
                     object_type: obj.type_().map(|t| t.to_string()),
                     owner: Some(format!("{:?}", obj.owner())),
+                    bcs_data,
                 });
             }
 
-            // Tier 3: Output objects
+            // Tier 3: Output objects (with full BCS for offline replay)
             for obj in tx.output_objects(&checkpoint.object_set) {
+                // Serialize the full Object for offline replay
+                let bcs_data = bcs::to_bytes(obj).unwrap_or_else(|_| Vec::new());
                 output.output_objects.push(OutputObjectRow {
                     checkpoint_num,
                     timestamp_ms,
@@ -1458,6 +1734,7 @@ impl Processor for ComprehensivePipeline {
                     version: obj.version().value(),
                     object_type: obj.type_().map(|t| t.to_string()),
                     owner: Some(format!("{:?}", obj.owner())),
+                    bcs_data,
                 });
             }
 
@@ -1992,6 +2269,33 @@ fn parse_package(package: &Option<String>) -> Result<Option<ObjectID>> {
     }
 }
 
+/// Convert ability set to comma-separated string
+fn ability_set_to_string(abilities: &AbilitySet) -> String {
+    let mut out = Vec::new();
+    if abilities.has_ability(Ability::Copy) {
+        out.push("copy");
+    }
+    if abilities.has_ability(Ability::Drop) {
+        out.push("drop");
+    }
+    if abilities.has_ability(Ability::Store) {
+        out.push("store");
+    }
+    if abilities.has_ability(Ability::Key) {
+        out.push("key");
+    }
+    out.join(",")
+}
+
+/// Convert visibility to string
+fn visibility_to_string(v: Visibility) -> &'static str {
+    match v {
+        Visibility::Public => "public",
+        Visibility::Friend => "friend",
+        Visibility::Private => "private",
+    }
+}
+
 /// Table metadata for output summary
 struct TableInfo {
     name: &'static str,
@@ -2008,6 +2312,7 @@ const OUTPUT_TABLES: &[TableInfo] = &[
     TableInfo { name: "output_objects", description: "Post-transaction object state" },
     TableInfo { name: "balance_changes", description: "Coin balance changes (+/- amounts)" },
     TableInfo { name: "packages", description: "Published packages" },
+    TableInfo { name: "package_modules", description: "Package bytecode (structs/functions)" },
     TableInfo { name: "execution_errors", description: "Failed transaction errors" },
 ];
 
